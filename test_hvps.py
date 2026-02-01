@@ -27,11 +27,6 @@ if __name__ == '__main__':
     motor1.stop()
     motor2.stop()
     time.sleep(dt)
-    for speed in speeds:
-        print('Motor forward at {}% speed'.format(speed * 100))
-        motor1.forward(speed)
-        motor2.forward(speed)
-        time.sleep(dt)
 
     for speed in speeds:
         print('Motor backward at {}% speed'.format(speed * 100))
