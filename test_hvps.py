@@ -22,7 +22,7 @@ if __name__ == '__main__':
         }
     })
 
-    speeds = list(np.linspace(0.8, 1, 10)) + list(np.linspace(1, 0.8, 10))
+    speeds = list(np.linspace(0, 1, 10)) + list(np.linspace(1, 0, 10))
     dt = 1
     motor1.stop()
     motor2.stop()
