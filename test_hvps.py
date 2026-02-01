@@ -1,8 +1,10 @@
 import numpy as np
 import hvps as motor_module
 import time
+import RPi.GPIO
 
 if __name__ == '__main__':
+    RPi.GPIO.setmode(RPi.GPIO.BCM)
 
     motor1 = motor_module.Motor({
         "pins": {
