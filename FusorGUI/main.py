@@ -12,7 +12,7 @@ Tab Structure:
 import tkinter as tk
 from tkinter import ttk, font
 import tkinter.font as tkfont
-from PIL import ImageTk
+from PIL import Image, ImageTk
 
 from camera import PlasmaCamera
 
