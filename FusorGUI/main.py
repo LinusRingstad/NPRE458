@@ -521,20 +521,32 @@ class PlotPanel(tk.Frame):
 class SensorReadout(tk.Frame):
     """
     Large read-only display for a measured sensor value.
+    Supports an optional warning banner (e.g. "Atmosphere") shown
+    when the value exceeds a threshold.
     """
 
-    def __init__(self, parent, label, unit, color=ACCENT, **kwargs):
+    def __init__(self, parent, label, unit, color=ACCENT,
+                 warn_above=None, warn_text="WARNING", **kwargs):
         super().__init__(parent, bg=PANEL_BG,
                          highlightbackground=color,
                          highlightthickness=1, **kwargs)
-        self.var   = tk.StringVar(value="---")
-        self.color = color
+        self.var        = tk.StringVar(value="---")
+        self.color      = color
+        self.warn_above = warn_above    # float threshold, or None to disable
+        self.warn_text  = warn_text
         self._build(label, unit)
 
     def _build(self, label, unit):
         tk.Label(self, text=label.upper(),
                  bg=PANEL_BG, fg=TEXT_MUTED,
                  font=FONT_SMALL).pack(pady=(6, 0))
+
+        # Warning banner — hidden until threshold exceeded
+        self.warn_lbl = tk.Label(self, text=self.warn_text,
+                                 bg=WARNING, fg=DARK_BG,
+                                 font=("Courier New", 8, "bold"),
+                                 padx=6, pady=1)
+        # not packed yet — shown dynamically in update()
 
         val_row = tk.Frame(self, bg=PANEL_BG)
         val_row.pack(pady=2)
@@ -554,11 +566,19 @@ class SensorReadout(tk.Frame):
 
     def update(self, value):
         """Call from your data loop: readout.update(measured_value)"""
-        self.var.set(f"{value:.2f}")
+        self.var.set(f"{value:.4g}")
         self.indicator.itemconfig("dot", fill=self.color)
 
+        # Show / hide the atmosphere warning banner
+        if self.warn_above is not None and value > self.warn_above:
+            self.warn_lbl.pack(after=self.pack_slaves()[0], pady=(0, 2))
+            self.config(highlightbackground=WARNING)
+        else:
+            self.warn_lbl.pack_forget()
+            self.config(highlightbackground=self.color)
+
     def set_alarm(self, active: bool):
-        """Highlight in warning color when out-of-range."""
+        """Highlight in danger color when out-of-range / no signal."""
         color = DANGER if active else self.color
         self.indicator.itemconfig("dot", fill=color)
 
@@ -598,7 +618,7 @@ def build_control_tab(parent):
     # --- Define controls ---
     # (label, unit, min, max, default, step)
     CONTROL_DEFS = [
-        ("Pressure",             "mTorr", 0.0,   500.0,  50.0,  1.0,   False),
+        ("Pressure",             "Torr",  0.0,   760.0,   0.05,  0.001, False),
         ("Power",                "W",     0.0,  2000.0, 100.0, 10.0,   False),
         ("Electron Temperature", "eV",    0.0,    50.0,   5.0,  0.1,   False),
         ("Plasma Density",       "m⁻³",   0.0,  1.0e17,  1e16, 1e15,   True),
@@ -666,8 +686,10 @@ def build_control_tab(parent):
 
     pressure_readout = SensorReadout(readout_frame,
                                      label="Measured Pressure",
-                                     unit="mTorr",
-                                     color=SUCCESS)
+                                     unit="Torr",
+                                     color=SUCCESS,
+                                     warn_above=40,
+                                     warn_text="⚠ ATMOSPHERE")
     pressure_readout.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=4)
 
     # ── Pressure reader ──────────────────────────────────────────────────
