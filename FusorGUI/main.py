@@ -15,6 +15,8 @@ import tkinter.font as tkfont
 from PIL import Image, ImageTk
 
 from camera import PlasmaCamera
+from pressure import PressureReader
+from pressure import PressureReader
 
 # ---------------------------------------------------------------------------
 # Module placeholders — replace these stubs with your real implementations
@@ -656,10 +658,10 @@ def build_control_tab(parent):
     readout_frame.columnconfigure(0, weight=1)
     readout_frame.columnconfigure(1, weight=1)
 
-    power_readout    = SensorReadout(readout_frame,
-                                     label="Measured Power",
-                                     unit="W",
-                                     color=ACCENT)
+    power_readout = SensorReadout(readout_frame,
+                                  label="Measured Power",
+                                  unit="W",
+                                  color=ACCENT)
     power_readout.grid(row=0, column=0, sticky="ew", padx=(0, 4), ipady=4)
 
     pressure_readout = SensorReadout(readout_frame,
@@ -668,27 +670,41 @@ def build_control_tab(parent):
                                      color=SUCCESS)
     pressure_readout.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=4)
 
-    # TODO: start your real-time data polling loop here, e.g.:
-    # def poll():
-    #     data = hardware.read_sensors()
-    #     power_readout.update(data["power"])
-    #     pressure_readout.update(data["pressure"])
-    #     te_plot.refresh(data["te_series"])
-    #     ne_plot.refresh(data["ne_series"])
-    #     eedf_plot.refresh(data["eedf"])
-    #     controls["Electron Temperature"].update_measured_value(data["te"])
-    #     controls["Plasma Density"].update_measured_value(data["ne"])
-    #     parent.after(200, poll)   # refresh every 200 ms
-    # parent.after(200, poll)
+    # ── Pressure reader ──────────────────────────────────────────────────
+    pressure_reader = PressureReader()   # default: /dev/ttyUSB0 @ 115200
+    ok, err = pressure_reader.start()
+
+    if not ok:
+        pressure_readout.var.set("ERR")
+        pressure_readout.set_alarm(True)
+        print(f"[Pressure] Serial error: {err}")
+
+    def _poll_pressure():
+        status, _ = pressure_reader.get_status()
+        val       = pressure_reader.get_pressure()
+
+        if status == "ok" and val is not None:
+            pressure_readout.update(val)
+            pressure_readout.set_alarm(False)
+            controls["Pressure"].update_measured_value(val)
+        elif status == "error":
+            pressure_readout.var.set("---")
+            pressure_readout.set_alarm(True)
+        # "waiting" — leave the display as-is until first data arrives
+
+        parent.after(250, _poll_pressure)
+
+    parent.after(250, _poll_pressure)
 
     return {
-        "camera":        camera_panel,
-        "controls":      controls,
-        "te_plot":       te_plot,
-        "ne_plot":       ne_plot,
-        "eedf_plot":     eedf_plot,
-        "power_readout": power_readout,
-        "pressure_readout": pressure_readout,
+        "camera":            camera_panel,
+        "controls":          controls,
+        "te_plot":           te_plot,
+        "ne_plot":           ne_plot,
+        "eedf_plot":         eedf_plot,
+        "power_readout":     power_readout,
+        "pressure_readout":  pressure_readout,
+        "pressure_reader":   pressure_reader,
     }
 
 
@@ -787,6 +803,17 @@ class PlasmaGUI(tk.Tk):
         train_tab = tk.Frame(self.notebook, bg=DARK_BG)
         self.notebook.add(train_tab, text="  Train  ")
         build_train_tab(train_tab)
+
+        # Clean up hardware on window close
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        """Shut down hardware readers before destroying the window."""
+        try:
+            self.widgets["pressure_reader"].stop()
+        except Exception:
+            pass
+        self.destroy()
 
 
 # ---------------------------------------------------------------------------
