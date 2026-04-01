@@ -39,7 +39,7 @@ void loop()
   voltage_factor = ADS.toVoltage(1);  // voltage factor
   v_ccpg = val_0 * voltage_factor * 2; // Factor of 2 is to adjust for voltage divider
   p_ccpg = calc_p_ccpg(v_ccpg);
-  
+  Serial.print(p_ccpg);
  
   //Serial.print("\tAnalog0: "); Serial.print(val_0); Serial.print('\t'); Serial.println(val_0 * f, 3);
   //Serial.print("\tAnalog1: "); Serial.print(val_1); Serial.print('\t'); Serial.println(val_1 * f, 3);
