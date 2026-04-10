@@ -672,7 +672,7 @@ class SpectrometerPanel(tk.Frame):
             self._start_btn.config(state="disabled")
             self._stop_btn.config(state="normal", bg=DANGER, fg=TEXT_PRIMARY,
                                    activebackground="#c0392b")
-            self._status_lbl.config(text="● Live", fg=SUCCESS)
+            self._status_lbl.config(text="● Calibrating…", fg=WARNING)
             self._poll()
         else:
             self._start_btn.config(state="normal")
@@ -690,6 +690,7 @@ class SpectrometerPanel(tk.Frame):
 
         self._canvas.delete("spectrum")
         self._canvas.delete("peak")
+        self._canvas.delete("calib_banner")
         self._overlay_msg.config(
             text="Press  ▶ Start  to open spectrometer", fg=TEXT_MUTED)
         self._error_lbl.config(text="")
@@ -709,8 +710,16 @@ class SpectrometerPanel(tk.Frame):
         data = self._spec.get_data()
         if data is not None:
             self._draw_spectrum(data)
-            self._peak_lbl.config(
-                text=f"peak: {data['peak_nm']:.1f} nm")
+
+            if data.get("calibrating"):
+                remaining = max(0, 15.0 - data.get("elapsed", 0))
+                self._status_lbl.config(
+                    text=f"● Calibrating… {remaining:.0f}s", fg=WARNING)
+                self._peak_lbl.config(text="peak: ---")
+            else:
+                self._status_lbl.config(text="● Live", fg=SUCCESS)
+                self._peak_lbl.config(
+                    text=f"peak: {data['peak_nm']:.1f} nm")
 
         self._after_id = self.after(self.POLL_MS, self._poll)
 
@@ -821,17 +830,36 @@ class SensorReadout(tk.Frame):
         self.indicator.create_oval(0, 0, 8, 8, fill=TEXT_MUTED, tags="dot")
         self.indicator.pack(side="left", padx=(0, 6))
 
-        # Optional refresh button
+        # Optional auto-refresh toggle button
         if self.on_refresh is not None:
-            tk.Button(
-                bottom_row, text="↺ Refresh",
-                bg=ACCENT_DIM, fg=ACCENT,
-                activebackground=ACCENT, activeforeground=DARK_BG,
-                relief="flat", bd=0, cursor="hand2",
+            self._auto_refresh = tk.BooleanVar(value=False)
+            self._auto_btn = tk.Checkbutton(
+                bottom_row,
+                text="Auto-Refresh",
+                variable=self._auto_refresh,
+                command=self._on_auto_toggle,
+                bg=PANEL_BG,
+                activebackground=PANEL_BG,
+                selectcolor=ACCENT_DIM,
+                fg=TEXT_MUTED,
+                activeforeground=TEXT_MUTED,
                 font=("Courier New", 8, "bold"),
-                padx=6, pady=1,
-                command=self.on_refresh,
-            ).pack(side="left")
+                cursor="hand2",
+            )
+            self._auto_btn.pack(side="left")
+        else:
+            self._auto_refresh = None
+            self._auto_btn = None
+
+    def _on_auto_toggle(self):
+        if self._auto_refresh.get():
+            self._auto_btn.config(fg=SUCCESS, activeforeground=SUCCESS)
+        else:
+            self._auto_btn.config(fg=TEXT_MUTED, activeforeground=TEXT_MUTED)
+
+    def is_auto_refresh(self):
+        """Return True if auto-refresh is currently enabled."""
+        return self._auto_refresh is not None and self._auto_refresh.get()
 
     def update(self, value):
         """Call from your data loop with the raw value (in base unit)."""
@@ -1013,6 +1041,9 @@ def build_control_tab(parent):
         elif status == "error":
             pressure_readout.var.set("---")
             pressure_readout.set_alarm(True)
+            # Auto-reconnect if the toggle is on
+            if pressure_readout.is_auto_refresh():
+                _reconnect_pressure()
         # "waiting" — leave display as-is until first data arrives
 
         parent.after(250, _poll_pressure)
