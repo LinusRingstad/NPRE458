@@ -13,7 +13,7 @@ START_Y, SIZE_Y = 371, 141
 # ALPHA determines how much "weight" the new frame has.
 # 0.1 = heavy stacking (very smooth, but slow to react)
 # 0.5 = light stacking (faster reaction, more noise)
-ALPHA = 0.01
+ALPHA = 0.05
 
 cap = cv2.VideoCapture(1) 
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
