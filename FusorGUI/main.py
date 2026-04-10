@@ -16,6 +16,7 @@ from PIL import Image, ImageTk
 
 from camera import PlasmaCamera
 from pressure import PressureReader
+from spectrometer import Spectrometer
 from pressure import PressureReader
 
 # ---------------------------------------------------------------------------
@@ -515,6 +516,247 @@ class PlotPanel(tk.Frame):
 
 
 # ---------------------------------------------------------------------------
+# Spectrometer Panel
+# ---------------------------------------------------------------------------
+
+class SpectrometerPanel(tk.Frame):
+    """
+    Live spectrometer display panel backed by spectrometer.Spectrometer.
+
+    Draws the intensity-vs-wavelength spectrum directly onto a tk.Canvas
+    using lines — no matplotlib required. Updates every POLL_MS milliseconds.
+
+    Layout:
+      ┌─────────────────────────────────────────┐
+      │  title bar                  peak: xxx nm │
+      │                                          │
+      │         live spectrum canvas             │
+      │                                          │
+      │──────────────────────────────────────────│
+      │  ▶ Start   ■ Stop     status             │
+      └─────────────────────────────────────────┘
+    """
+
+    POLL_MS    = 50       # ~20 fps display refresh
+    LINE_COLOR = "#39d353"  # bright green spectrum line
+    PEAK_COLOR = "#f85149"  # red peak marker
+    GRID_COLOR = "#1a2030"  # subtle grid lines
+
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, bg=DARK_BG,
+                         highlightbackground="#d29922",
+                         highlightthickness=1, **kwargs)
+        self._spec     = Spectrometer()
+        self._running  = False
+        self._after_id = None
+        self._build()
+
+    # ------------------------------------------------------------------
+    def _build(self):
+        self.rowconfigure(1, weight=1)
+        self.columnconfigure(0, weight=1)
+
+        # ── Title bar ───────────────────────────────────────────────────
+        title_bar = tk.Frame(self, bg=DARK_BG)
+        title_bar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 2))
+        title_bar.columnconfigure(0, weight=1)
+
+        tk.Label(title_bar,
+                 text="Emission Spectrum",
+                 bg=DARK_BG, fg="#d29922",
+                 font=FONT_HEADER, anchor="w").grid(row=0, column=0, sticky="w")
+
+        self._peak_lbl = tk.Label(title_bar,
+                                   text="peak: ---",
+                                   bg=DARK_BG, fg=self.PEAK_COLOR,
+                                   font=FONT_LABEL)
+        self._peak_lbl.grid(row=0, column=1, sticky="e")
+
+        # ── Spectrum canvas ──────────────────────────────────────────────
+        self._canvas = tk.Canvas(self, bg=PLOT_BG,
+                                  highlightthickness=0)
+        self._canvas.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 4))
+        self._canvas.bind("<Configure>", self._on_resize)
+
+        # Overlay shown when not running
+        self._overlay = tk.Frame(self._canvas, bg=PLOT_BG)
+        self._overlay.place(relx=0.5, rely=0.5, anchor="center")
+        tk.Label(self._overlay, text="⬛",
+                 bg=PLOT_BG, fg=BORDER_COLOR,
+                 font=("Courier New", 28)).pack()
+        self._overlay_msg = tk.Label(self._overlay,
+                                      text="Press  ▶ Start  to open spectrometer",
+                                      bg=PLOT_BG, fg=TEXT_MUTED,
+                                      font=FONT_LABEL)
+        self._overlay_msg.pack(pady=(4, 0))
+        self._error_lbl = tk.Label(self._overlay, text="",
+                                    bg=PLOT_BG, fg=DANGER,
+                                    font=FONT_SMALL,
+                                    wraplength=320, justify="center")
+        self._error_lbl.pack(pady=(4, 0))
+
+        # ── Control bar ──────────────────────────────────────────────────
+        bar = tk.Frame(self, bg=PANEL_BG,
+                       highlightbackground=BORDER_COLOR,
+                       highlightthickness=1)
+        bar.grid(row=2, column=0, sticky="ew")
+
+        self._start_btn = tk.Button(
+            bar, text="▶  Start",
+            bg=SUCCESS, fg=DARK_BG,
+            activebackground="#2ea043", activeforeground=DARK_BG,
+            relief="flat", bd=0, cursor="hand2",
+            font=("Courier New", 10, "bold"),
+            padx=14, pady=5,
+            command=self._on_start,
+        )
+        self._start_btn.pack(side="left", padx=(8, 4), pady=6)
+
+        self._stop_btn = tk.Button(
+            bar, text="■  Stop",
+            bg=ACCENT_DIM, fg=TEXT_MUTED,
+            activebackground=DANGER, activeforeground=TEXT_PRIMARY,
+            relief="flat", bd=0, cursor="hand2",
+            font=("Courier New", 10, "bold"),
+            padx=14, pady=5,
+            state="disabled",
+            command=self._on_stop,
+        )
+        self._stop_btn.pack(side="left", padx=(0, 12), pady=6)
+
+        self._status_lbl = tk.Label(bar, text="● Stopped",
+                                     bg=PANEL_BG, fg=TEXT_MUTED,
+                                     font=FONT_LABEL)
+        self._status_lbl.pack(side="left")
+
+        # Wavelength range label on the right
+        start_nm = self._spec.start_x * self._spec.slope + self._spec.intercept
+        end_nm   = self._spec.end_x   * self._spec.slope + self._spec.intercept
+        tk.Label(bar, text=f"{start_nm:.0f} – {end_nm:.0f} nm",
+                 bg=PANEL_BG, fg=TEXT_MUTED,
+                 font=FONT_SMALL).pack(side="right", padx=8)
+
+        # Cache canvas dimensions
+        self._cw = 1
+        self._ch = 1
+
+    # ------------------------------------------------------------------
+    def _on_resize(self, event):
+        self._cw = max(event.width,  1)
+        self._ch = max(event.height, 1)
+        self._draw_grid()
+
+    def _draw_grid(self):
+        """Draw faint horizontal guide lines on the canvas."""
+        self._canvas.delete("grid")
+        for frac in (0.25, 0.5, 0.75):
+            y = int(self._ch * frac)
+            self._canvas.create_line(0, y, self._cw, y,
+                                     fill=self.GRID_COLOR, tags="grid")
+
+    # ------------------------------------------------------------------
+    def _on_start(self):
+        self._status_lbl.config(text="Starting…", fg=WARNING)
+        self._start_btn.config(state="disabled")
+        import threading
+        threading.Thread(target=self._init_spectrometer, daemon=True).start()
+
+    def _init_spectrometer(self):
+        ok, err = self._spec.start()
+        self.after(0, lambda: self._on_spec_ready(ok, err))
+
+    def _on_spec_ready(self, ok, err):
+        if ok:
+            self._running = True
+            self._overlay.place_forget()
+            self._start_btn.config(state="disabled")
+            self._stop_btn.config(state="normal", bg=DANGER, fg=TEXT_PRIMARY,
+                                   activebackground="#c0392b")
+            self._status_lbl.config(text="● Live", fg=SUCCESS)
+            self._poll()
+        else:
+            self._start_btn.config(state="normal")
+            self._status_lbl.config(text="● Error", fg=DANGER)
+            self._overlay_msg.config(text="Spectrometer failed to start",
+                                      fg=DANGER)
+            self._error_lbl.config(text=err or "Unknown error")
+
+    def _on_stop(self):
+        self._running = False
+        if self._after_id is not None:
+            self.after_cancel(self._after_id)
+            self._after_id = None
+        self._spec.stop()
+
+        self._canvas.delete("spectrum")
+        self._canvas.delete("peak")
+        self._overlay_msg.config(
+            text="Press  ▶ Start  to open spectrometer", fg=TEXT_MUTED)
+        self._error_lbl.config(text="")
+        self._overlay.place(relx=0.5, rely=0.5, anchor="center")
+        self._peak_lbl.config(text="peak: ---")
+
+        self._start_btn.config(state="normal")
+        self._stop_btn.config(state="disabled",
+                               bg=ACCENT_DIM, fg=TEXT_MUTED)
+        self._status_lbl.config(text="● Stopped", fg=TEXT_MUTED)
+
+    # ------------------------------------------------------------------
+    def _poll(self):
+        if not self._running:
+            return
+
+        data = self._spec.get_data()
+        if data is not None:
+            self._draw_spectrum(data)
+            self._peak_lbl.config(
+                text=f"peak: {data['peak_nm']:.1f} nm")
+
+        self._after_id = self.after(self.POLL_MS, self._poll)
+
+    def _draw_spectrum(self, data):
+        """Render the intensity profile as a polyline on the canvas."""
+        intensity   = data["intensity"]
+        n           = len(intensity)
+        if n < 2 or self._cw < 2 or self._ch < 2:
+            return
+
+        x_scale = self._cw / (n - 1)
+        y_scale = self._ch / 255.0
+
+        # Build flat coordinate list for create_line
+        coords = []
+        for i, val in enumerate(intensity):
+            x = int(i * x_scale)
+            y = int(self._ch - val * y_scale)
+            coords.extend((x, y))
+
+        self._canvas.delete("spectrum")
+        self._canvas.delete("peak")
+
+        self._canvas.create_line(*coords,
+                                  fill=self.LINE_COLOR,
+                                  width=1,
+                                  tags="spectrum")
+
+        # Draw a vertical red line at the peak
+        px = int(data["peak_idx"] * x_scale)
+        self._canvas.create_line(px, 0, px, self._ch,
+                                  fill=self.PEAK_COLOR,
+                                  width=1,
+                                  dash=(4, 4),
+                                  tags="peak")
+
+    # ------------------------------------------------------------------
+    def destroy(self):
+        self._running = False
+        if self._after_id:
+            self.after_cancel(self._after_id)
+        self._spec.stop()
+        super().destroy()
+
+
+# ---------------------------------------------------------------------------
 # Readout Widget (measured sensor value, read-only)
 # ---------------------------------------------------------------------------
 
@@ -706,11 +948,9 @@ def build_control_tab(parent):
                         color="#3fb950")
     ne_plot.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
 
-    # ── Plot 3: EEDF ────────────────────────────────────────────────────
-    eedf_plot = PlotPanel(right_col,
-                          title="Electron Energy Distribution Function  (EEDF)",
-                          color="#d29922")
-    eedf_plot.grid(row=2, column=0, sticky="nsew", pady=(0, 4))
+    # ── Plot 3: Spectrometer ─────────────────────────────────────────────
+    spec_panel = SpectrometerPanel(right_col)
+    spec_panel.grid(row=2, column=0, sticky="nsew", pady=(0, 4))
 
     # ── Sensor Readouts: Measured Power | Measured Pressure ─────────────
     readout_frame = tk.Frame(right_col, bg=DARK_BG)
@@ -784,7 +1024,7 @@ def build_control_tab(parent):
         "controls":          controls,
         "te_plot":           te_plot,
         "ne_plot":           ne_plot,
-        "eedf_plot":         eedf_plot,
+        "spec_panel":        spec_panel,
         "power_readout":     power_readout,
         "pressure_readout":  pressure_readout,
         "pressure_reader":   pressure_reader,
