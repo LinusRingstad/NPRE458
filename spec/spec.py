@@ -15,7 +15,7 @@ START_Y, SIZE_Y = 371, 141
 # 0.5 = light stacking (faster reaction, more noise)
 ALPHA = 0.01
 
-cap = cv2.VideoCapture(0) 
+cap = cv2.VideoCapture(1) 
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 # Adjust these based on your specific UVC driver response
