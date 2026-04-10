@@ -63,34 +63,26 @@ while True:
     current_profile = np.mean(gray_roi, axis=0)
 
     if is_calibrating:
-        # Build the background profile using the stacking logic
+        # Build the background profile
         if background_profile is None:
             background_profile = current_profile.copy()
         else:
             background_profile = cv2.addWeighted(background_profile, 1 - ALPHA, current_profile, ALPHA, 0)
         
-        # Display countdown on the ROI frame
-        countdown = int(CALIBRATION_TIME - elapsed)
-        cv2.putText(roi, f"CALIBRATING BG: {countdown}s", (10, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        
-        # For visualization during calibration, show the raw profile
-        display_profile = cv2.normalize(background_profile, None, 0, 255, cv2.NORM_MINMAX)
+        # FIX: Flatten the array here
+        display_profile = cv2.normalize(background_profile, None, 0, 255, cv2.NORM_MINMAX).flatten()
         graph_label = "Capturing Background..."
     
     else:
-        # 2. Subtract Background
-        # We use np.maximum to ensure we don't get negative values (which causes artifacts)
         subtracted = np.maximum(current_profile - background_profile, 0)
 
-        # 3. Frame Stacking (Running Average) on the cleaned signal
         if stacked_profile is None:
             stacked_profile = subtracted.copy()
         else:
             stacked_profile = cv2.addWeighted(stacked_profile, 1 - ALPHA, subtracted, ALPHA, 0)
 
-        # 4. Rescaling (Normalization)
-        display_profile = cv2.normalize(stacked_profile, None, 0, 255, cv2.NORM_MINMAX)
+        # FIX: Flatten the array here
+        display_profile = cv2.normalize(stacked_profile, None, 0, 255, cv2.NORM_MINMAX).flatten()
         graph_label = "Background Subtracted"
 
     # 5. Visualization
