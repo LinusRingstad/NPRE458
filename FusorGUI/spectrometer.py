@@ -54,7 +54,7 @@ START_Y = 371
 SIZE_Y  = 141
  
 # Camera index - 0 is the first USB device; change if the Pi has multiple cameras
-CAMERA_INDEX = 0
+CAMERA_INDEX = 1
  
  
 class Spectrometer:
