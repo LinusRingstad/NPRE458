@@ -725,15 +725,24 @@ class SpectrometerPanel(tk.Frame):
 
     def _draw_spectrum(self, data):
         """Render the intensity profile as a polyline on the canvas."""
-        intensity   = data["intensity"]
-        n           = len(intensity)
+        intensity = data["intensity"]
+        n         = len(intensity)
+
+        # Always read current canvas size — don't rely on the cached values
+        # which may still be 1 if no Configure event has fired yet
+        cw = self._canvas.winfo_width()
+        ch = self._canvas.winfo_height()
+
+        # Update cache
+        self._cw = max(cw, 1)
+        self._ch = max(ch, 1)
+
         if n < 2 or self._cw < 2 or self._ch < 2:
             return
 
         x_scale = self._cw / (n - 1)
         y_scale = self._ch / 255.0
 
-        # Build flat coordinate list for create_line
         coords = []
         for i, val in enumerate(intensity):
             x = int(i * x_scale)
@@ -748,7 +757,7 @@ class SpectrometerPanel(tk.Frame):
                                   width=1,
                                   tags="spectrum")
 
-        # Draw a vertical red line at the peak
+        # Dashed red vertical line at the peak
         px = int(data["peak_idx"] * x_scale)
         self._canvas.create_line(px, 0, px, self._ch,
                                   fill=self.PEAK_COLOR,
