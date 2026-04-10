@@ -117,6 +117,9 @@ class Spectrometer:
  
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT,  720)
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1) # Manual mode
+        cap.set(cv2.CAP_PROP_EXPOSURE, 5)     # Larger values = brighter 2S to 2P0
+        cap.set(cv2.CAP_PROP_GAIN, 255)
  
         self._cap     = cap
         self._running = True
