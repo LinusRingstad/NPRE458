@@ -521,22 +521,33 @@ class PlotPanel(tk.Frame):
 class SensorReadout(tk.Frame):
     """
     Large read-only display for a measured sensor value.
-    Supports an optional warning banner (e.g. "Atmosphere") shown
-    when the value exceeds a threshold.
+
+    Optional features:
+      warn_above   — float: show a warning banner above this value
+      warn_text    — str:   text for the warning banner
+      auto_unit    — dict:  automatic unit switching based on value threshold
+                            e.g. {"above": 1.0, "unit_hi": "Torr", "unit_lo": "mTorr",
+                                  "scale_lo": 1000}
+                            When value < threshold, display value*scale_lo in unit_lo.
+      on_refresh   — callable: if provided, a ↺ Refresh button is added that calls it
     """
 
     def __init__(self, parent, label, unit, color=ACCENT,
-                 warn_above=None, warn_text="WARNING", **kwargs):
+                 warn_above=None, warn_text="WARNING",
+                 auto_unit=None, on_refresh=None, **kwargs):
         super().__init__(parent, bg=PANEL_BG,
                          highlightbackground=color,
                          highlightthickness=1, **kwargs)
         self.var        = tk.StringVar(value="---")
+        self._unit_var  = tk.StringVar(value=unit)
         self.color      = color
-        self.warn_above = warn_above    # float threshold, or None to disable
+        self.warn_above = warn_above
         self.warn_text  = warn_text
-        self._build(label, unit)
+        self.auto_unit  = auto_unit     # dict or None
+        self.on_refresh = on_refresh
+        self._build(label)
 
-    def _build(self, label, unit):
+    def _build(self, label):
         tk.Label(self, text=label.upper(),
                  bg=PANEL_BG, fg=TEXT_MUTED,
                  font=FONT_SMALL).pack(pady=(6, 0))
@@ -555,18 +566,47 @@ class SensorReadout(tk.Frame):
                  bg=PANEL_BG, fg=self.color,
                  font=("Courier New", 22, "bold")).pack(side="left")
 
-        tk.Label(val_row, text=f" {unit}",
+        tk.Label(val_row, textvariable=self._unit_var,
                  bg=PANEL_BG, fg=TEXT_MUTED,
-                 font=FONT_LABEL).pack(side="left", anchor="s", pady=(0, 4))
+                 font=FONT_LABEL).pack(side="left", anchor="s", pady=(0, 4),
+                                       padx=(2, 0))
 
-        self.indicator = tk.Canvas(self, width=8, height=8,
+        bottom_row = tk.Frame(self, bg=PANEL_BG)
+        bottom_row.pack(pady=(0, 6))
+
+        self.indicator = tk.Canvas(bottom_row, width=8, height=8,
                                    bg=PANEL_BG, highlightthickness=0)
         self.indicator.create_oval(0, 0, 8, 8, fill=TEXT_MUTED, tags="dot")
-        self.indicator.pack(pady=(0, 6))
+        self.indicator.pack(side="left", padx=(0, 6))
+
+        # Optional refresh button
+        if self.on_refresh is not None:
+            tk.Button(
+                bottom_row, text="↺ Refresh",
+                bg=ACCENT_DIM, fg=ACCENT,
+                activebackground=ACCENT, activeforeground=DARK_BG,
+                relief="flat", bd=0, cursor="hand2",
+                font=("Courier New", 8, "bold"),
+                padx=6, pady=1,
+                command=self.on_refresh,
+            ).pack(side="left")
 
     def update(self, value):
-        """Call from your data loop: readout.update(measured_value)"""
-        self.var.set(f"{value:.4g}")
+        """Call from your data loop with the raw value (in base unit)."""
+        # Auto unit switching
+        if self.auto_unit is not None:
+            threshold = self.auto_unit["above"]
+            if value < threshold:
+                display_val  = value * self.auto_unit.get("scale_lo", 1)
+                display_unit = self.auto_unit["unit_lo"]
+            else:
+                display_val  = value
+                display_unit = self.auto_unit["unit_hi"]
+            self._unit_var.set(f" {display_unit}")
+            self.var.set(f"{display_val:.4g}")
+        else:
+            self.var.set(f"{value:.4g}")
+
         self.indicator.itemconfig("dot", fill=self.color)
 
         # Show / hide the atmosphere warning banner
@@ -684,22 +724,43 @@ def build_control_tab(parent):
                                   color=ACCENT)
     power_readout.grid(row=0, column=0, sticky="ew", padx=(0, 4), ipady=4)
 
-    pressure_readout = SensorReadout(readout_frame,
-                                     label="Measured Pressure",
-                                     unit="Torr",
-                                     color=SUCCESS,
-                                     warn_above=40,
-                                     warn_text="⚠ ATMOSPHERE")
-    pressure_readout.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=4)
-
     # ── Pressure reader ──────────────────────────────────────────────────
     pressure_reader = PressureReader()   # default: /dev/ttyUSB0 @ 115200
     ok, err = pressure_reader.start()
 
     if not ok:
+        print(f"[Pressure] Serial error: {err}")
+
+    def _reconnect_pressure():
+        """Stop the current reader and start a fresh one (called by Refresh button)."""
+        pressure_reader.stop()
+        pressure_readout.var.set("---")
+        pressure_readout.set_alarm(False)
+        pressure_readout._unit_var.set(" Torr")
+        pressure_readout.warn_lbl.pack_forget()
+        pressure_readout.config(highlightbackground=SUCCESS)
+        ok2, err2 = pressure_reader.start()
+        if not ok2:
+            pressure_readout.var.set("ERR")
+            pressure_readout.set_alarm(True)
+            print(f"[Pressure] Reconnect failed: {err2}")
+
+    pressure_readout = SensorReadout(
+        readout_frame,
+        label="Measured Pressure",
+        unit="Torr",
+        color=SUCCESS,
+        warn_above=25,
+        warn_text="⚠ ATMOSPHERE",
+        auto_unit={"above": 1.0, "unit_hi": "Torr",
+                   "unit_lo": "mTorr", "scale_lo": 1000},
+        on_refresh=_reconnect_pressure,
+    )
+    pressure_readout.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=4)
+
+    if not ok:
         pressure_readout.var.set("ERR")
         pressure_readout.set_alarm(True)
-        print(f"[Pressure] Serial error: {err}")
 
     def _poll_pressure():
         status, _ = pressure_reader.get_status()
@@ -712,7 +773,7 @@ def build_control_tab(parent):
         elif status == "error":
             pressure_readout.var.set("---")
             pressure_readout.set_alarm(True)
-        # "waiting" — leave the display as-is until first data arrives
+        # "waiting" — leave display as-is until first data arrives
 
         parent.after(250, _poll_pressure)
 
