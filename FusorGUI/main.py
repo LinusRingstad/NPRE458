@@ -12,7 +12,8 @@ Tab Structure:
 import tkinter as tk
 from tkinter import ttk, font
 import tkinter.font as tkfont
-from PIL import Image, ImageTk
+from pathlib import Path
+from PIL import Image, ImageTk, ImageOps
 
 from camera import PlasmaCamera
 from pressure import PressureReader
@@ -515,6 +516,57 @@ class PlotPanel(tk.Frame):
         pass
 
 
+class StaticImagePanel(tk.Frame):
+    """A titled panel that scales a static image to fit its available space."""
+
+    def __init__(self, parent, title, image_path, color=ACCENT, **kwargs):
+        super().__init__(parent, bg=DARK_BG,
+                         highlightbackground=color,
+                         highlightthickness=1, **kwargs)
+        self.title = title
+        self._image_path = Path(image_path)
+        self._source_image = None
+        self._photo = None
+
+        self._build()
+        self.bind("<Configure>", self._on_resize)
+
+    def _build(self):
+        tk.Label(self, text=self.title,
+                 bg=DARK_BG, fg=self.cget("highlightbackground"),
+                 font=FONT_HEADER, anchor="w").pack(
+                     fill="x", padx=8, pady=(6, 0))
+
+        self._image_area = tk.Label(self, bg=PLOT_BG)
+        self._image_area.pack(fill="both", expand=True, padx=6, pady=6)
+
+        try:
+            base_dir = Path(__file__).resolve().parent
+        except NameError:
+            base_dir = Path.cwd()
+
+        full_path = self._image_path if self._image_path.is_absolute() else base_dir / self._image_path
+        try:
+            self._source_image = Image.open(full_path)
+            self._image_area.config(text="")
+        except Exception as exc:
+            self._source_image = None
+            self._image_area.config(text=f"Image not found: {exc}",
+                                    fg=DANGER, font=FONT_SMALL,
+                                    justify="center", wraplength=300)
+
+    def _on_resize(self, event):
+        if self._source_image is None:
+            return
+
+        target_w = max(event.width - 12, 1)
+        target_h = max(event.height - 36, 1)
+        fitted = ImageOps.contain(self._source_image, (target_w, target_h), Image.LANCZOS)
+        self._photo = ImageTk.PhotoImage(fitted)
+        self._image_area.config(image=self._photo)
+        self._image_area.image = self._photo
+
+
 # ---------------------------------------------------------------------------
 # Spectrometer Panel
 # ---------------------------------------------------------------------------
@@ -968,42 +1020,24 @@ def build_control_tab(parent):
     right_col = tk.Frame(parent, bg=DARK_BG)
     right_col.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=8)
     right_col.columnconfigure(0, weight=1)
-    right_col.rowconfigure(0, weight=1)   # Te plot
-    right_col.rowconfigure(1, weight=1)   # ne plot
-    right_col.rowconfigure(2, weight=1)   # EEDF plot
+    right_col.rowconfigure(0, weight=1, minsize=180)   # Te plot
+    right_col.rowconfigure(1, weight=1, minsize=180)   # ne plot
+    right_col.rowconfigure(2, weight=2, minsize=240)   # spectrometer
     right_col.rowconfigure(3, weight=0)   # sensor readouts (fixed height)
 
-    # For Plot 1
-    te_image_path = "electron_temperature_I80mA_V550V_p0.025Torr.png"
-    te_img_open = Image.open(te_image_path)
-    te_img_render = ImageTk.PhotoImage(te_img_open)
-
-    # For Plot 2
-    ne_image_path = "plasma_density_I80mA_V550V_p0.025Torr.png"
-    ne_img_open = Image.open(ne_image_path)
-    ne_img_render = ImageTk.PhotoImage(ne_img_open)
-
     # ── Plot 1: Electron Temperature ────────────────────────────────────
-    te_plot = PlotPanel(right_col,
-                        title="Electron Temperature  (Tₑ)",
-                        color="#58a6ff")
+    te_plot = StaticImagePanel(right_col,
+                               title="Electron Temperature  (Tₑ)",
+                               image_path="electron_temperature_I80mA_V550V_p0.025Torr.png",
+                               color="#58a6ff")
     te_plot.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
 
-    # Add the image to Plot 1
-    te_label = tk.Label(te_plot, image=te_img_render, bg="#0d1117") # Adjust bg to match your theme
-    te_label.image = te_img_render # Keep reference
-    te_label.pack(expand=True, fill="both")
-
     # ── Plot 2: Plasma Density ──────────────────────────────────────────
-    ne_plot = PlotPanel(right_col,
-                        title="Plasma Density  (nₑ)",
-                        color="#3fb950")
+    ne_plot = StaticImagePanel(right_col,
+                               title="Plasma Density  (nₑ)",
+                               image_path="plasma_density_I80mA_V550V_p0.025Torr.png",
+                               color="#3fb950")
     ne_plot.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
-
-    # Add the image to Plot 2
-    ne_label = tk.Label(ne_plot, image=ne_img_render, bg="#0d1117")
-    ne_label.image = ne_img_render # Keep reference
-    ne_label.pack(expand=True, fill="both")
 
     # ── Plot 3: Spectrometer ─────────────────────────────────────────────
     spec_panel = SpectrometerPanel(right_col)
