@@ -973,17 +973,37 @@ def build_control_tab(parent):
     right_col.rowconfigure(2, weight=1)   # EEDF plot
     right_col.rowconfigure(3, weight=0)   # sensor readouts (fixed height)
 
+    # For Plot 1
+    te_image_path = "electron_temperature_I80mA_V550V_p0.025Torr.png"
+    te_img_open = Image.open(te_image_path)
+    te_img_render = ImageTk.PhotoImage(te_img_open)
+
+    # For Plot 2
+    ne_image_path = "plasma_density_I80mA_V550V_p0.025Torr.png"
+    ne_img_open = Image.open(ne_image_path)
+    ne_img_render = ImageTk.PhotoImage(ne_img_open)
+
     # ── Plot 1: Electron Temperature ────────────────────────────────────
     te_plot = PlotPanel(right_col,
                         title="Electron Temperature  (Tₑ)",
                         color="#58a6ff")
     te_plot.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
 
+    # Add the image to Plot 1
+    te_label = tk.Label(te_plot, image=te_img_render, bg="#0d1117") # Adjust bg to match your theme
+    te_label.image = te_img_render # Keep reference
+    te_label.pack(expand=True, fill="both")
+
     # ── Plot 2: Plasma Density ──────────────────────────────────────────
     ne_plot = PlotPanel(right_col,
                         title="Plasma Density  (nₑ)",
                         color="#3fb950")
     ne_plot.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
+
+    # Add the image to Plot 2
+    ne_label = tk.Label(ne_plot, image=ne_img_render, bg="#0d1117")
+    ne_label.image = ne_img_render # Keep reference
+    ne_label.pack(expand=True, fill="both")
 
     # ── Plot 3: Spectrometer ─────────────────────────────────────────────
     spec_panel = SpectrometerPanel(right_col)
