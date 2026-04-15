@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import ttk, font
 import tkinter.font as tkfont
 from pathlib import Path
-from PIL import Image, ImageTk, ImageOps
+from PIL import Image, ImageTk
 
 from camera import PlasmaCamera
 from pressure import PressureReader
@@ -561,7 +561,7 @@ class StaticImagePanel(tk.Frame):
 
         target_w = max(event.width - 12, 1)
         target_h = max(event.height - 36, 1)
-        fitted = ImageOps.contain(self._source_image, (target_w, target_h), Image.LANCZOS)
+        fitted = self._source_image.resize((target_w, target_h), Image.LANCZOS)
         self._photo = ImageTk.PhotoImage(fitted)
         self._image_area.config(image=self._photo)
         self._image_area.image = self._photo
