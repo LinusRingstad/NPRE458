@@ -52,51 +52,72 @@ recording = True
 
 print(f"Recording for {DURATION} seconds...")
 
+import csv
+
+WARMUP_DURATION = 90
+COLLECTION_DURATION = 90
+CYCLE_DURATION = WARMUP_DURATION + COLLECTION_DURATION
+
+cycle_start_time = time.time()
+collecting_to_csv = False
+stacked_profile = None
+
+print("Starting spectrometer cycle: 90s warmup → 90s collection")
+
 while True:
     ret, frame = cap.read()
-    if not ret: break
+    if not ret:
+        break
 
-    elapsed = time.time() - start_time
-    remaining = DURATION - elapsed
-    
-    # 1. Processing (Stacking)
+    elapsed_cycle = time.time() - cycle_start_time
+
+    # --- Phase निर्धination ---
+    if elapsed_cycle < WARMUP_DURATION:
+        phase = "warmup"
+        collecting_to_csv = False
+        remaining = WARMUP_DURATION - elapsed_cycle
+    elif elapsed_cycle < CYCLE_DURATION:
+        phase = "collect"
+        collecting_to_csv = True
+        remaining = CYCLE_DURATION - elapsed_cycle
+    else:
+        # --- Reset cycle ---
+        print("Cycle complete. Resetting...")
+        cycle_start_time = time.time()
+        stacked_profile = None
+        continue
+
+    # --- ROI Processing ---
     roi = frame[START_Y:START_Y+SIZE_Y, START_X:END_X]
     gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     current_profile = np.mean(gray_roi, axis=0)
 
+    # --- Accumulate ONLY during collection phase ---
+    if collecting_to_csv:
+        if stacked_profile is None:
+            stacked_profile = current_profile.astype(np.float32)
+        else:
+            stacked_profile = cv2.add(stacked_profile, current_profile.astype(np.float32))
 
-
-
-    if stacked_profile is None:
-        stacked_profile = current_profile.astype(np.float32)
+    # --- Display text ---
+    if phase == "warmup":
+        timer_str = f"WARMUP: {int(remaining)}s | collecting_to_csv=False"
     else:
-        # 2. Simple Addition (The "Accumulation" method)
-        # This adds the new frame to the total without fading the old ones
-        stacked_profile = cv2.add(stacked_profile, current_profile.astype(np.float32))
-        
-    # 2. Display Logic
-    if remaining > 0:
-        timer_str = f"Recording: {int(remaining)}s left"
+        timer_str = f"COLLECTING: {int(remaining)}s | collecting_to_csv=True"
+
+    # --- Normalize for display ---
+    if stacked_profile is not None:
+        display_profile = cv2.normalize(stacked_profile, None, 0, 255, cv2.NORM_MINMAX)
     else:
-        timer_str = "Recording Finished. Press 'q' to save."
-        recording = False
+        display_profile = np.zeros(END_X - START_X)
 
-
-    # 3. Rescaling for display (Normalization)
-    # Because stacked_profile grows over time, we normalize it to 0-255 just for the view
-    display_profile = cv2.normalize(stacked_profile, None, 0, 255, cv2.NORM_MINMAX)
-
-    # 4. Visualization
     spectrum_graph = draw_graph(display_profile, width=(END_X - START_X), height=300, timer_text=timer_str)
 
     cv2.imshow('1. Live ROI (Raw)', roi)
     cv2.imshow('2. Stacked Spectrum', spectrum_graph)
 
-    # Exit condition: Press 'q' to stop early, or auto-stop after 60s
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
-        break
-    if not recording and key == ord('q'):
         break
 
 # --- Post-Processing & CSV Export ---
