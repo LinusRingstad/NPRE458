@@ -56,43 +56,44 @@ import csv
 
 WARMUP_DURATION = 90
 COLLECTION_DURATION = 90
-CYCLE_DURATION = WARMUP_DURATION + COLLECTION_DURATION
+TOTAL_DURATION = WARMUP_DURATION + COLLECTION_DURATION
 
-cycle_start_time = time.time()
+start_time = time.time()
 collecting_to_csv = False
 stacked_profile = None
+finished = False
 
-print("Starting spectrometer cycle: 90s warmup → 90s collection")
+print("Starting: 90s warmup → 90s collection")
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
-    elapsed_cycle = time.time() - cycle_start_time
+    elapsed = time.time() - start_time
 
-    # --- Phase निर्धination ---
-    if elapsed_cycle < WARMUP_DURATION:
+    # --- Phase Logic ---
+    if elapsed < WARMUP_DURATION:
         phase = "warmup"
         collecting_to_csv = False
-        remaining = WARMUP_DURATION - elapsed_cycle
-    elif elapsed_cycle < CYCLE_DURATION:
+        remaining = WARMUP_DURATION - elapsed
+
+    elif elapsed < TOTAL_DURATION:
         phase = "collect"
         collecting_to_csv = True
-        remaining = CYCLE_DURATION - elapsed_cycle
+        remaining = TOTAL_DURATION - elapsed
+
     else:
-        # --- Reset cycle ---
-        print("Cycle complete. Resetting...")
-        cycle_start_time = time.time()
-        stacked_profile = None
-        continue
+        print("Collection complete.")
+        finished = True
+        break   # 🔴 EXIT LOOP instead of resetting
 
     # --- ROI Processing ---
     roi = frame[START_Y:START_Y+SIZE_Y, START_X:END_X]
     gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     current_profile = np.mean(gray_roi, axis=0)
 
-    # --- Accumulate ONLY during collection phase ---
+    # --- Accumulate ONLY during collection ---
     if collecting_to_csv:
         if stacked_profile is None:
             stacked_profile = current_profile.astype(np.float32)
@@ -118,6 +119,7 @@ while True:
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
+        print("Stopped early by user.")
         break
 
 # --- Post-Processing & CSV Export ---
