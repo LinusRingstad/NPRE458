@@ -64,12 +64,23 @@ while True:
     gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     current_profile = np.mean(gray_roi, axis=0)
 
+
+
+
     if stacked_profile is None:
         stacked_profile = current_profile.astype(np.float32)
     else:
         # 2. Simple Addition (The "Accumulation" method)
         # This adds the new frame to the total without fading the old ones
         stacked_profile = cv2.add(stacked_profile, current_profile.astype(np.float32))
+        
+    # 2. Display Logic
+    if remaining > 0:
+        timer_str = f"Recording: {int(remaining)}s left"
+    else:
+        timer_str = "Recording Finished. Press 'q' to save."
+        recording = False
+
 
     # 3. Rescaling for display (Normalization)
     # Because stacked_profile grows over time, we normalize it to 0-255 just for the view
