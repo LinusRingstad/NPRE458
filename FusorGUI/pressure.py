@@ -37,7 +37,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_PORT  = "/dev/ttyUSB0"
+DEFAULT_PORT  = "/dev/ttyACM0"
 DEFAULT_BAUD  = 115200
 STARTUP_DELAY = 2.0    # seconds to wait after opening port before reading
 READ_TIMEOUT  = 1.0    # serial readline timeout (seconds)
