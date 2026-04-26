@@ -13,15 +13,14 @@ START_Y, SIZE_Y = 371, 141
 # ALPHA determines how much "weight" the new frame has.
 # 0.1 = heavy stacking (very smooth, but slow to react)
 # 0.5 = light stacking (faster reaction, more noise)
-ALPHA = 0.05
+ALPHA = 0.1
 
-cap = cv2.VideoCapture(1) 
+cap = cv2.VideoCapture(0) 
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 # Adjust these based on your specific UVC driver response
 cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1) # Manual mode
-cap.set(cv2.CAP_PROP_EXPOSURE, 5)     # Larger values = brighter 2S to 2P0
-cap.set(cv2.CAP_PROP_GAIN, 255)
+cap.set(cv2.CAP_PROP_EXPOSURE, 1)     # Larger values = brighter 2S to 2P0
 
 def draw_graph(intensity, width=640, height=300):
     """Creates an OpenCV image representing the spectrum graph."""
