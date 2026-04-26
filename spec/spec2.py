@@ -65,19 +65,18 @@ while True:
     current_profile = np.mean(gray_roi, axis=0)
 
     if stacked_profile is None:
-        stacked_profile = current_profile.copy()
+        stacked_profile = current_profile.astype(np.float32)
     else:
-        stacked_profile = cv2.addWeighted(stacked_profile, 1 - ALPHA, current_profile, ALPHA, 0)
+        # 2. Simple Addition (The "Accumulation" method)
+        # This adds the new frame to the total without fading the old ones
+        stacked_profile = cv2.add(stacked_profile, current_profile.astype(np.float32))
 
-    # 2. Display Logic
-    if remaining > 0:
-        timer_str = f"Recording: {int(remaining)}s left"
-    else:
-        timer_str = "Recording Finished. Press 'q' to save."
-        recording = False
+    # 3. Rescaling for display (Normalization)
+    # Because stacked_profile grows over time, we normalize it to 0-255 just for the view
+    display_profile = cv2.normalize(stacked_profile, None, 0, 255, cv2.NORM_MINMAX)
 
-    rescaled_profile = cv2.normalize(stacked_profile, None, 0, 255, cv2.NORM_MINMAX)
-    spectrum_graph = draw_graph(rescaled_profile, width=(END_X - START_X), height=300, timer_text=timer_str)
+    # 4. Visualization
+    spectrum_graph = draw_graph(display_profile, width=(END_X - START_X), height=300, timer_text=timer_str)
 
     cv2.imshow('1. Live ROI (Raw)', roi)
     cv2.imshow('2. Stacked Spectrum', spectrum_graph)
