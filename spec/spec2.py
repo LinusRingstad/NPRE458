@@ -90,18 +90,22 @@ while True:
         break
 
 # --- Post-Processing & CSV Export ---
-print("Saving data to spectrum_data.csv...")
+# --- Post-Processing & CSV Export ---
+if stacked_profile is not None:
+    print("Saving data to spectrum_data.csv...")
 
-# Create Wavelength Array
-pixel_bins = np.arange(len(stacked_profile)) + START_X
-wavelengths = (pixel_bins * SLOPE) + INTERCEPT
+    # Create Wavelength Array
+    pixel_bins = np.arange(len(stacked_profile)) + START_X
+    wavelengths = (pixel_bins * SLOPE) + INTERCEPT
 
-# Combine columns
-data_to_save = np.column_stack((wavelengths, stacked_profile))
+    # Combine columns
+    data_to_save = np.column_stack((wavelengths, stacked_profile))
 
-# Save
-np.savetxt("spectrum_data.csv", data_to_save, delimiter=",", header="Wavelength_nm,Intensity", comments="")
-print("Export complete.")
+    # Save
+    np.savetxt("spectrum_data.csv", data_to_save, delimiter=",", header="Wavelength_nm,Intensity", comments="")
+    print("Export complete.")
+else:
+    print("Error: No frames were captured. Please check your camera connection and try again.")
 
 cap.release()
 cv2.destroyAllWindows()
