@@ -12,7 +12,6 @@ Tab Structure:
 import tkinter as tk
 from tkinter import ttk, font
 import tkinter.font as tkfont
-from pathlib import Path
 from PIL import Image, ImageTk
 
 from camera import PlasmaCamera
@@ -516,57 +515,6 @@ class PlotPanel(tk.Frame):
         pass
 
 
-class StaticImagePanel(tk.Frame):
-    """A titled panel that scales a static image to fit its available space."""
-
-    def __init__(self, parent, title, image_path, color=ACCENT, **kwargs):
-        super().__init__(parent, bg=DARK_BG,
-                         highlightbackground=color,
-                         highlightthickness=1, **kwargs)
-        self.title = title
-        self._image_path = Path(image_path)
-        self._source_image = None
-        self._photo = None
-
-        self._build()
-        self.bind("<Configure>", self._on_resize)
-
-    def _build(self):
-        tk.Label(self, text=self.title,
-                 bg=DARK_BG, fg=self.cget("highlightbackground"),
-                 font=FONT_HEADER, anchor="w").pack(
-                     fill="x", padx=8, pady=(6, 0))
-
-        self._image_area = tk.Label(self, bg=PLOT_BG)
-        self._image_area.pack(fill="both", expand=True, padx=6, pady=6)
-
-        try:
-            base_dir = Path(__file__).resolve().parent
-        except NameError:
-            base_dir = Path.cwd()
-
-        full_path = self._image_path if self._image_path.is_absolute() else base_dir / self._image_path
-        try:
-            self._source_image = Image.open(full_path)
-            self._image_area.config(text="")
-        except Exception as exc:
-            self._source_image = None
-            self._image_area.config(text=f"Image not found: {exc}",
-                                    fg=DANGER, font=FONT_SMALL,
-                                    justify="center", wraplength=300)
-
-    def _on_resize(self, event):
-        if self._source_image is None:
-            return
-
-        target_w = max(event.width - 12, 1)
-        target_h = max(event.height - 36, 1)
-        fitted = self._source_image.resize((target_w, target_h), Image.LANCZOS)
-        self._photo = ImageTk.PhotoImage(fitted)
-        self._image_area.config(image=self._photo)
-        self._image_area.image = self._photo
-
-
 # ---------------------------------------------------------------------------
 # Spectrometer Panel
 # ---------------------------------------------------------------------------
@@ -891,36 +839,24 @@ class SensorReadout(tk.Frame):
         self.indicator.create_oval(0, 0, 8, 8, fill=TEXT_MUTED, tags="dot")
         self.indicator.pack(side="left", padx=(0, 6))
 
-        # Optional auto-refresh toggle button
+        # Optional manual refresh button
         if self.on_refresh is not None:
-            self._auto_refresh = tk.BooleanVar(value=False)
-            self._auto_btn = tk.Checkbutton(
+            tk.Button(
                 bottom_row,
-                text="Auto-Refresh",
-                variable=self._auto_refresh,
-                command=self._on_auto_toggle,
-                bg=PANEL_BG,
-                activebackground=PANEL_BG,
-                selectcolor=ACCENT_DIM,
-                fg=TEXT_MUTED,
-                activeforeground=TEXT_MUTED,
-                font=("Courier New", 8, "bold"),
+                text="↺ Refresh",
+                command=self.on_refresh,
+                bg=ACCENT_DIM,
+                fg=ACCENT,
+                activebackground=ACCENT,
+                activeforeground=DARK_BG,
+                relief="flat", bd=0,
                 cursor="hand2",
-            )
-            self._auto_btn.pack(side="left")
-        else:
-            self._auto_refresh = None
-            self._auto_btn = None
-
-    def _on_auto_toggle(self):
-        if self._auto_refresh.get():
-            self._auto_btn.config(fg=SUCCESS, activeforeground=SUCCESS)
-        else:
-            self._auto_btn.config(fg=TEXT_MUTED, activeforeground=TEXT_MUTED)
+                font=("Courier New", 8, "bold"),
+                padx=6, pady=1,
+            ).pack(side="left")
 
     def is_auto_refresh(self):
-        """Return True if auto-refresh is currently enabled."""
-        return self._auto_refresh is not None and self._auto_refresh.get()
+        return False
 
     def update(self, value):
         """Call from your data loop with the raw value (in base unit)."""
@@ -1020,23 +956,21 @@ def build_control_tab(parent):
     right_col = tk.Frame(parent, bg=DARK_BG)
     right_col.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=8)
     right_col.columnconfigure(0, weight=1)
-    right_col.rowconfigure(0, weight=1, minsize=180)   # Te plot
-    right_col.rowconfigure(1, weight=1, minsize=180)   # ne plot
-    right_col.rowconfigure(2, weight=2, minsize=240)   # spectrometer
+    right_col.rowconfigure(0, weight=1)   # Te plot
+    right_col.rowconfigure(1, weight=1)   # ne plot
+    right_col.rowconfigure(2, weight=1)   # EEDF plot
     right_col.rowconfigure(3, weight=0)   # sensor readouts (fixed height)
 
     # ── Plot 1: Electron Temperature ────────────────────────────────────
-    te_plot = StaticImagePanel(right_col,
-                               title="Electron Temperature  (Tₑ)",
-                               image_path="electron_temperature_I80mA_V550V_p0.025Torr.png",
-                               color="#58a6ff")
+    te_plot = PlotPanel(right_col,
+                        title="Electron Temperature  (Tₑ)",
+                        color="#58a6ff")
     te_plot.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
 
     # ── Plot 2: Plasma Density ──────────────────────────────────────────
-    ne_plot = StaticImagePanel(right_col,
-                               title="Plasma Density  (nₑ)",
-                               image_path="plasma_density_I80mA_V550V_p0.025Torr.png",
-                               color="#3fb950")
+    ne_plot = PlotPanel(right_col,
+                        title="Plasma Density  (nₑ)",
+                        color="#3fb950")
     ne_plot.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
 
     # ── Plot 3: Spectrometer ─────────────────────────────────────────────
@@ -1104,9 +1038,6 @@ def build_control_tab(parent):
         elif status == "error":
             pressure_readout.var.set("---")
             pressure_readout.set_alarm(True)
-            # Auto-reconnect if the toggle is on
-            if pressure_readout.is_auto_refresh():
-                _reconnect_pressure()
         # "waiting" — leave display as-is until first data arrives
 
         parent.after(250, _poll_pressure)
