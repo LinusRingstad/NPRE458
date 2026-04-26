@@ -12,7 +12,7 @@ START_Y, SIZE_Y = 371, 141
 
 # --- Stacking Settings ---
 ALPHA = 0.05
-DURATION = 15  # seconds
+DURATION = 90  # seconds
 
 cap = cv2.VideoCapture(1) 
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
