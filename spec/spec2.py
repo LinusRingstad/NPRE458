@@ -58,6 +58,8 @@ WARMUP_DURATION = 90
 COLLECTION_DURATION = 90
 TOTAL_DURATION = WARMUP_DURATION + COLLECTION_DURATION
 
+frame_count = 0
+
 start_time = time.time()
 collecting_to_csv = False
 stacked_profile = None
@@ -100,6 +102,8 @@ while True:
         else:
             stacked_profile = cv2.add(stacked_profile, current_profile.astype(np.float32))
 
+        frame_count += 1 
+
     # --- Display text ---
     if phase == "warmup":
         timer_str = f"WARMUP: {int(remaining)}s | collecting_to_csv=False"
@@ -124,19 +128,23 @@ while True:
 
 # --- Post-Processing & CSV Export ---
 # --- Post-Processing & CSV Export ---
-if stacked_profile is not None:
+if stacked_profile is not None and frame_count > 0:
     print("Saving data to spectrum_data.csv...")
 
-    # Create Wavelength Array
-    pixel_bins = np.arange(len(stacked_profile)) + START_X
+    # ✅ Normalize by number of frames
+    averaged_profile = stacked_profile / frame_count
+
+    pixel_bins = np.arange(len(averaged_profile)) + START_X
     wavelengths = (pixel_bins * SLOPE) + INTERCEPT
 
-    # Combine columns
-    data_to_save = np.column_stack((wavelengths, stacked_profile))
+    data_to_save = np.column_stack((wavelengths, averaged_profile))
 
-    # Save
-    np.savetxt("spectrum_data.csv", data_to_save, delimiter=",", header="Wavelength_nm,Intensity", comments="")
-    print("Export complete.")
+    np.savetxt("spectrum_data.csv", data_to_save,
+               delimiter=",",
+               header="Wavelength_nm,Intensity",
+               comments="")
+
+    print(f"Export complete. Averaged over {frame_count} frames.")
 else:
     print("Error: No frames were captured. Please check your camera connection and try again.")
 
