@@ -54,8 +54,8 @@ print(f"Recording for {DURATION} seconds...")
 
 import csv
 
-WARMUP_DURATION = 90
-COLLECTION_DURATION = 90
+WARMUP_DURATION = 20
+COLLECTION_DURATION = 160
 TOTAL_DURATION = WARMUP_DURATION + COLLECTION_DURATION
 
 frame_count = 0
@@ -65,7 +65,7 @@ collecting_to_csv = False
 stacked_profile = None
 finished = False
 
-print("Starting: 90s warmup → 90s collection")
+print("Starting: 20s warmup → 160s collection")
 
 while True:
     ret, frame = cap.read()
