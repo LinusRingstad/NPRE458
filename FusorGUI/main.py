@@ -1127,9 +1127,9 @@ def build_control_tab(parent):
     # (label, unit, min, max, default, step)
     CONTROL_DEFS = [
         ("Pressure",             "Torr",  0.0,   760.0,   0.05,  0.001, False, False),
-        ("Power",                "W",     0.0,  2000.0, 100.0, 10.0,   False, False),
-        ("Electron Temperature", "eV",    0.0,    50.0,   5.0,  0.1,   False, True),
-        ("Plasma Density",       "m⁻³",   0.0,  1.0e17,  1e16, 1e15,   True,  True),
+        ("Power",                "W",     0.0,  2000.0, 25.0, 1.0,   False, False),
+        ("Electron Temperature", "eV",    0.0,    50.0,   1.55,  0.05,   False, True),
+        ("Plasma Density",       "m⁻³",   0.0,  1.0e17,  5e10, 1e10,   True,  True),
     ]
 
     controls = {}

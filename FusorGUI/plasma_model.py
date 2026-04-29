@@ -6,19 +6,19 @@ PyTorch model loader and inference engine for the plasma neural network.
 Features:  ['radius', 'rat1', 'rat2', 'rat3', 'rat4', 'rat5']  (6 inputs)
 Targets:   ['ne', 'te']                                          (2 outputs)
 
-The loader handles two common save formats:
-  A) torch.save(model, path)          → full model object (preferred)
-  B) torch.save(model.state_dict(), path) → OrderedDict of weights only
-     → requires the PlasmaNet architecture defined below to be correct
+IMPORTANT: The model was trained on StandardScaler-normalised inputs and
+outputs. Both scalers must be loaded alongside the model weights:
+    scaler_x_ratonly.pkl  — input scaler  (6 features)
+    scaler_y_ratonly.pkl  — output scaler (ne, te)
 
-If you saved with option B, fill in the hidden layer sizes in PlasmaNet
-to match your training script exactly, then this will work automatically.
+Without inverse-transforming the output the predictions are in normalised
+space (small numbers, often negative) which is not physically meaningful.
 
 Usage:
-    predictor = PlasmaPredictor("plasma_model_ratonly.pth")
+    predictor = PlasmaPredictor()
     ok, err = predictor.load()
     profile  = predictor.predict_radial_profile(ratios)
-    # profile: { "r": ndarray(m), "ne": ndarray, "te": ndarray }
+    # { "r": ndarray(m), "ne": ndarray(m⁻³), "te": ndarray(eV) }
 """
 
 import numpy as np
@@ -35,15 +35,15 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
+try:
+    import joblib
+    JOBLIB_AVAILABLE = True
+except ImportError:
+    JOBLIB_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
-# Network architecture
-# ---------------------------------------------------------------------------
-# *** IMPORTANT ***
-# If your .pth file was saved with torch.save(model.state_dict(), ...),
-# this architecture MUST match your training script exactly.
-# Update the hidden layer sizes below to match yours.
-# If you saved with torch.save(model, ...) this class is not used.
+# Network architecture (must match training script exactly)
 # ---------------------------------------------------------------------------
 
 class PlasmaMLP(nn.Module):
@@ -68,25 +68,47 @@ class PlasmaMLP(nn.Module):
         return self.network(x)
 
 
+# ---------------------------------------------------------------------------
+# Predictor
+# ---------------------------------------------------------------------------
+
 class PlasmaPredictor:
     """
-    Wraps the saved PyTorch plasma model.
-    Handles both full-object saves and state-dict saves.
+    Wraps the saved PyTorch plasma model + sklearn StandardScalers.
+
+    Files needed (all in the same directory as this script):
+        plasma_model_ratonly.pth    — model state dict
+        scaler_x_ratonly.pkl        — input scaler
+        scaler_y_ratonly.pkl        — output scaler
     """
 
-    def __init__(self, model_path: str = "plasma_model_ratonly.pth",
-                 n_radial: int = N_RADIAL):
-        self.model_path = Path(model_path)
-        self.n_radial   = n_radial
-        self._model     = None
-        self._loaded    = False
+    def __init__(self,
+                 model_path:    str = "plasma_model_ratonly.pth",
+                 scaler_x_path: str = "scaler_x_ratonly.pkl",
+                 scaler_y_path: str = "scaler_y_ratonly.pkl",
+                 n_radial:      int = N_RADIAL):
+
+        self._base      = Path(__file__).resolve().parent
+        self.model_path    = self._resolve(model_path)
+        self.scaler_x_path = self._resolve(scaler_x_path)
+        self.scaler_y_path = self._resolve(scaler_y_path)
+        self.n_radial      = n_radial
+
+        self._model    = None
+        self._scaler_x = None
+        self._scaler_y = None
+        self._loaded   = False
 
         self.r_points = np.linspace(R_WALL, R_CATHODE, n_radial)
+
+    def _resolve(self, p):
+        path = Path(p)
+        return path if path.is_absolute() else self._base / path
 
     # ------------------------------------------------------------------
     def load(self):
         """
-        Load model weights from disk.
+        Load model weights and both scalers from disk.
         Returns (True, None) on success or (False, error_string) on failure.
         """
         if not TORCH_AVAILABLE:
@@ -94,45 +116,49 @@ class PlasmaPredictor:
                            "Install with:  pip install torch --index-url "
                            "https://download.pytorch.org/whl/cpu")
 
-        # Resolve path
-        path = self.model_path
-        if not path.exists():
-            alt = Path(__file__).resolve().parent / path
-            if alt.exists():
-                path = alt
-            else:
-                return False, f"Model file not found: {path}"
+        if not JOBLIB_AVAILABLE:
+            return False, ("joblib is not installed.\n"
+                           "Install with:  pip install joblib")
+
+        # --- Load model weights ---
+        if not self.model_path.exists():
+            return False, f"Model file not found: {self.model_path}"
 
         try:
-            checkpoint = torch.load(path,
+            checkpoint = torch.load(self.model_path,
                                      map_location=torch.device("cpu"),
                                      weights_only=False)
         except Exception as exc:
             return False, f"torch.load failed: {exc}"
 
-        # --- Determine save format ---
         if isinstance(checkpoint, nn.Module):
-            # Format A: full model object saved directly
             self._model = checkpoint
-
         elif isinstance(checkpoint, dict):
-            # Format B: state dict — instantiate architecture then load weights
             net = PlasmaMLP()
             try:
                 net.load_state_dict(checkpoint)
             except RuntimeError as exc:
-                return False, (
-                    f"State dict load failed: {exc}\n"
-                    "Check that PlasmaMLP in plasma_model.py matches "
-                    "your training script exactly."
-                )
+                return False, f"State dict load failed: {exc}"
             self._model = net
-
         else:
-            return False, (f"Unrecognised checkpoint type: {type(checkpoint)}. "
-                           "Expected nn.Module or state dict.")
+            return False, f"Unrecognised checkpoint type: {type(checkpoint)}"
 
         self._model.eval()
+
+        # --- Load scalers ---
+        for path, attr, name in [
+            (self.scaler_x_path, "_scaler_x", "scaler_x"),
+            (self.scaler_y_path, "_scaler_y", "scaler_y"),
+        ]:
+            if not path.exists():
+                return False, (f"{name} file not found: {path}\n"
+                               "Make sure scaler_x_ratonly.pkl and "
+                               "scaler_y_ratonly.pkl are in the same folder.")
+            try:
+                setattr(self, attr, joblib.load(path))
+            except Exception as exc:
+                return False, f"Failed to load {name}: {exc}"
+
         self._loaded = True
         return True, None
 
@@ -147,7 +173,7 @@ class PlasmaPredictor:
 
         Returns
         -------
-        dict  { 'r': ndarray(m), 'ne': ndarray, 'te': ndarray }
+        dict  { 'r': ndarray(m), 'ne': ndarray(m⁻³), 'te': ndarray(eV) }
         None  if model not loaded or inference fails
         """
         if not self._loaded:
@@ -155,17 +181,27 @@ class PlasmaPredictor:
 
         try:
             rat_row = [ratios[f"rat{i}"] for i in range(1, 6)]
-            rows = [[r] + rat_row for r in self.r_points]
 
-            X = torch.tensor(rows, dtype=torch.float32)
+            # Build raw feature array: shape (N_RADIAL, 6)
+            rows = np.array([[r] + rat_row for r in self.r_points],
+                            dtype=np.float64)
+
+            # Scale inputs the same way the training script did
+            rows_scaled = self._scaler_x.transform(rows)
+
+            X = torch.tensor(rows_scaled, dtype=torch.float32)
 
             with torch.no_grad():
-                preds = self._model(X).numpy()   # (N_RADIAL, 2)
+                preds_scaled = self._model(X).numpy()   # (N_RADIAL, 2)
+
+            # Inverse-transform outputs back to physical units
+            # scaler_y was fit on [ne, te] columns in that order
+            preds_physical = self._scaler_y.inverse_transform(preds_scaled)
 
             return {
                 "r":  self.r_points.copy(),
-                "ne": preds[:, 0],
-                "te": preds[:, 1],
+                "ne": preds_physical[:, 0],   # m⁻³
+                "te": preds_physical[:, 1],   # eV
             }
 
         except Exception as exc:
