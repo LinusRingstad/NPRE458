@@ -12,8 +12,9 @@ Tab Structure:
 import tkinter as tk
 from tkinter import ttk, font
 import tkinter.font as tkfont
-from PIL import Image, ImageTk
 import numpy as np
+from PIL import Image, ImageTk
+
 from camera import PlasmaCamera
 from pressure import PressureReader
 from spectrometer import Spectrometer
@@ -1206,9 +1207,9 @@ def build_control_tab(parent):
         wl        = data["wavelengths"]
         intensity = data["intensity"]
 
-        ratios = extract_ratios(wl, intensity)
+        ratios, reason = extract_ratios(wl, intensity)
         if ratios is None:
-            print("[Prediction] Could not extract peak ratios — peaks out of range")
+            print(f"[Prediction] Skipping: {reason}")
             parent.after(_AGG_INTERVAL, _run_prediction)
             return
 
