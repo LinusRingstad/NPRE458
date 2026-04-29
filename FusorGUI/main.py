@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import ttk, font
 import tkinter.font as tkfont
 from PIL import Image, ImageTk
-
+import numpy as np
 from camera import PlasmaCamera
 from pressure import PressureReader
 from spectrometer import Spectrometer
