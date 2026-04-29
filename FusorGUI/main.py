@@ -17,7 +17,8 @@ from PIL import Image, ImageTk
 from camera import PlasmaCamera
 from pressure import PressureReader
 from spectrometer import Spectrometer
-from pressure import PressureReader
+from peak_ratios import extract_ratios
+from plasma_model import PlasmaPredictor
 
 # ---------------------------------------------------------------------------
 # Module placeholders — replace these stubs with your real implementations
@@ -100,7 +101,8 @@ class ParameterControl(tk.Frame):
     """
 
     def __init__(self, parent, label, unit, min_val, max_val,
-                 default_val, step=1.0, sci_notation=False, **kwargs):
+                 default_val, step=1.0, sci_notation=False,
+                 show_radius=False, **kwargs):
         super().__init__(parent, bg=PANEL_BG,
                          highlightbackground=BORDER_COLOR,
                          highlightthickness=1,
@@ -112,11 +114,14 @@ class ParameterControl(tk.Frame):
         self.max_val      = max_val
         self.step         = step
         self.sci_notation = sci_notation
+        self.show_radius  = show_radius
         self.enabled      = tk.BooleanVar(value=False)
         self.value        = tk.DoubleVar(value=default_val)
         self.setpoint     = tk.DoubleVar(value=default_val)
         self._sp_str      = tk.StringVar(value=self._fmt(default_val))
         self._display_str = tk.StringVar(value=self._fmt(default_val))
+        # Radius input (only used when show_radius=True)
+        self.radius_var   = tk.StringVar(value="0.14")
 
         self.columnconfigure(1, weight=1)
         self._build()
@@ -224,6 +229,37 @@ class ParameterControl(tk.Frame):
                  bg=PANEL_BG, fg=TEXT_MUTED,
                  font=FONT_LABEL).pack(side="left")
 
+        # ── Col 1 Row 3: radius input (hidden until ON, only if show_radius) ─
+        if self.show_radius:
+            self.radius_frame = tk.Frame(self, bg=PANEL_BG)
+            # NOT gridded yet — shown only when ON
+
+            tk.Label(self.radius_frame, text="Radius (r):",
+                     bg=PANEL_BG, fg=TEXT_MUTED,
+                     font=FONT_LABEL).pack(side="left")
+
+            self.radius_entry = tk.Entry(
+                self.radius_frame,
+                textvariable=self.radius_var,
+                width=10,
+                bg=DARK_BG, fg="#d29922",
+                insertbackground="#d29922",
+                relief="flat",
+                font=FONT_MONO,
+            )
+            self.radius_entry.pack(side="left", padx=(6, 4))
+
+            tk.Label(self.radius_frame, text="m",
+                     bg=PANEL_BG, fg=TEXT_MUTED,
+                     font=FONT_LABEL).pack(side="left")
+
+            tk.Label(self.radius_frame,
+                     text=f"(cathode={46.29e-3/2:.4f}  wall={280e-3/2:.4f})",
+                     bg=PANEL_BG, fg=TEXT_MUTED,
+                     font=FONT_SMALL).pack(side="left", padx=(8, 0))
+        else:
+            self.radius_frame = None
+
     # ------------------------------------------------------------------
     def _on_toggle(self):
         self.enabled.set(not self.enabled.get())
@@ -235,14 +271,24 @@ class ParameterControl(tk.Frame):
             self.val_display.config(fg=ACCENT)
             # Reveal arrow and setpoint rows
             self.arrow_frame.grid(row=1, column=1, sticky="w", pady=(0, 4))
-            self.sp_frame.grid(row=2, column=1, sticky="w", pady=(0, 10))
+            self.sp_frame.grid(row=2, column=1, sticky="w", pady=(0, 4))
+            if self.radius_frame is not None:
+                self.radius_frame.grid(row=3, column=1, sticky="w", pady=(0, 10))
+                self.toggle_btn.grid(row=0, column=0, rowspan=4,
+                                     sticky="nsew", padx=(8, 12), pady=8)
+            else:
+                self.sp_frame.grid(row=2, column=1, sticky="w", pady=(0, 10))
         else:
             self.toggle_btn.config(text="OFF", bg=DANGER, fg=TEXT_PRIMARY,
                                    activebackground=SUCCESS, activeforeground=DARK_BG)
             self.val_display.config(fg=TEXT_PRIMARY)
-            # Hide arrow and setpoint rows
+            # Hide arrow, setpoint, and radius rows
             self.arrow_frame.grid_remove()
             self.sp_frame.grid_remove()
+            if self.radius_frame is not None:
+                self.radius_frame.grid_remove()
+            self.toggle_btn.grid(row=0, column=0, rowspan=3,
+                                 sticky="nsew", padx=(8, 12), pady=8)
 
         # TODO: call your hardware enable/disable function here
         # e.g., hardware.set_control_enabled(self.label, enabled)
@@ -516,6 +562,156 @@ class PlotPanel(tk.Frame):
 
 
 # ---------------------------------------------------------------------------
+# Radial Profile Panel  (Te or ne vs radius, predicted by neural network)
+# ---------------------------------------------------------------------------
+
+R_CATHODE = 46.29e-3 / 2   # m
+R_WALL    = 280e-3   / 2   # m
+
+class RadialProfilePanel(tk.Frame):
+    """
+    Draws a radial profile (Te or ne vs r) predicted by the plasma model
+    directly on a tk.Canvas — no matplotlib needed.
+
+    Call update_profile(r, values) to push new data in.
+    """
+
+    GRID_COLOR  = "#1a2030"
+    AXIS_COLOR  = "#8b949e"
+
+    def __init__(self, parent, title, unit, color=ACCENT,
+                 sci_y=False, **kwargs):
+        super().__init__(parent, bg=DARK_BG,
+                         highlightbackground=color,
+                         highlightthickness=1, **kwargs)
+        self.title  = title
+        self.unit   = unit
+        self.color  = color
+        self.sci_y  = sci_y
+        self._r     = None
+        self._vals  = None
+        self._build()
+
+    def _build(self):
+        self.rowconfigure(1, weight=1)
+        self.columnconfigure(0, weight=1)
+
+        # Title bar
+        title_bar = tk.Frame(self, bg=DARK_BG)
+        title_bar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 2))
+        title_bar.columnconfigure(0, weight=1)
+
+        tk.Label(title_bar, text=self.title,
+                 bg=DARK_BG, fg=self.color,
+                 font=FONT_HEADER, anchor="w").grid(row=0, column=0, sticky="w")
+
+        self._last_update_lbl = tk.Label(title_bar, text="no data",
+                                          bg=DARK_BG, fg=TEXT_MUTED,
+                                          font=FONT_SMALL)
+        self._last_update_lbl.grid(row=0, column=1, sticky="e")
+
+        # Canvas
+        self._canvas = tk.Canvas(self, bg=PLOT_BG, highlightthickness=0)
+        self._canvas.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        self._canvas.bind("<Configure>", self._on_resize)
+
+        # Idle overlay
+        self._overlay = tk.Frame(self._canvas, bg=PLOT_BG)
+        self._overlay.place(relx=0.5, rely=0.5, anchor="center")
+        tk.Label(self._overlay,
+                 text="Awaiting spectrometer prediction…",
+                 bg=PLOT_BG, fg=TEXT_MUTED, font=FONT_LABEL).pack()
+
+    def _on_resize(self, _event):
+        self._redraw()
+
+    def update_profile(self, r: np.ndarray, values: np.ndarray,
+                       timestamp: str = ""):
+        """Push a new radial profile. Called from the main thread."""
+        self._r    = r
+        self._vals = values
+        self._last_update_lbl.config(text=timestamp)
+        self._overlay.place_forget()
+        self._redraw()
+
+    def _redraw(self):
+        if self._r is None or self._vals is None:
+            return
+
+        cw = self._canvas.winfo_width()
+        ch = self._canvas.winfo_height()
+        if cw < 10 or ch < 10:
+            return
+
+        # Margins for axis labels
+        mx, my = 52, 12
+        pw = cw - mx - 8      # plot width
+        ph = ch - my - 28     # plot height  (bottom margin for x labels)
+
+        self._canvas.delete("all")
+
+        # Grid lines
+        for frac in (0.25, 0.5, 0.75):
+            y = my + int(ph * frac)
+            self._canvas.create_line(mx, y, mx + pw, y,
+                                     fill=self.GRID_COLOR)
+
+        # Axis lines
+        self._canvas.create_line(mx, my, mx, my + ph,
+                                  fill=self.AXIS_COLOR)          # Y axis
+        self._canvas.create_line(mx, my + ph, mx + pw, my + ph,
+                                  fill=self.AXIS_COLOR)          # X axis
+
+        # X axis labels (cathode / wall)
+        self._canvas.create_text(mx, my + ph + 14,
+                                  text=f"wall ({R_WALL*100:.1f} cm)",
+                                  fill=TEXT_MUTED, font=FONT_SMALL,
+                                  anchor="w")
+        self._canvas.create_text(mx + pw, my + ph + 14,
+                                  text=f"cathode ({R_CATHODE*100:.1f} cm)",
+                                  fill=TEXT_MUTED, font=FONT_SMALL,
+                                  anchor="e")
+
+        # Y axis labels
+        v_min = float(np.min(self._vals))
+        v_max = float(np.max(self._vals))
+        if v_max == v_min:
+            v_max = v_min + 1
+
+        def fmt_y(v):
+            return f"{v:.2e}" if self.sci_y else f"{v:.2f}"
+
+        self._canvas.create_text(mx - 4, my,
+                                  text=fmt_y(v_max),
+                                  fill=TEXT_MUTED, font=FONT_SMALL,
+                                  anchor="e")
+        self._canvas.create_text(mx - 4, my + ph,
+                                  text=fmt_y(v_min),
+                                  fill=TEXT_MUTED, font=FONT_SMALL,
+                                  anchor="e")
+        self._canvas.create_text(mx - 4, my + ph // 2,
+                                  text=f"{self.unit}",
+                                  fill=self.color, font=FONT_SMALL,
+                                  anchor="e")
+
+        # Data polyline
+        r_min = float(np.min(self._r))
+        r_max = float(np.max(self._r))
+        r_range = r_max - r_min if r_max != r_min else 1
+
+        coords = []
+        for r_val, v_val in zip(self._r, self._vals):
+            x = mx + int((r_val - r_min) / r_range * pw)
+            y = my + int((1 - (v_val - v_min) / (v_max - v_min)) * ph)
+            coords.extend((x, y))
+
+        if len(coords) >= 4:
+            self._canvas.create_line(*coords,
+                                      fill=self.color, width=2,
+                                      smooth=True)
+
+
+# ---------------------------------------------------------------------------
 # Spectrometer Panel
 # ---------------------------------------------------------------------------
 
@@ -765,6 +961,10 @@ class SpectrometerPanel(tk.Frame):
                                   dash=(4, 4),
                                   tags="peak")
 
+    def get_latest_data(self):
+        """Return the latest spectrum data dict from the spectrometer, or None."""
+        return self._spec.get_data()
+
     # ------------------------------------------------------------------
     def destroy(self):
         self._running = False
@@ -925,20 +1125,21 @@ def build_control_tab(parent):
     # --- Define controls ---
     # (label, unit, min, max, default, step)
     CONTROL_DEFS = [
-        ("Pressure",             "Torr",  0.0,   760.0,   0.05,  0.001, False),
-        ("Power",                "W",     0.0,  2000.0, 100.0, 10.0,   False),
-        ("Electron Temperature", "eV",    0.0,    50.0,   5.0,  0.1,   False),
-        ("Plasma Density",       "m⁻³",   0.0,  1.0e17,  1e16, 1e15,   True),
+        ("Pressure",             "Torr",  0.0,   760.0,   0.05,  0.001, False, False),
+        ("Power",                "W",     0.0,  2000.0, 100.0, 10.0,   False, False),
+        ("Electron Temperature", "eV",    0.0,    50.0,   5.0,  0.1,   False, True),
+        ("Plasma Density",       "m⁻³",   0.0,  1.0e17,  1e16, 1e15,   True,  True),
     ]
 
     controls = {}
-    for i, (label, unit, mn, mx, dflt, step, sci) in enumerate(CONTROL_DEFS):
+    for i, (label, unit, mn, mx, dflt, step, sci, radius) in enumerate(CONTROL_DEFS):
         ctrl_frame.rowconfigure(i, weight=1)
         ctrl = ParameterControl(ctrl_frame,
                                 label=label, unit=unit,
                                 min_val=mn, max_val=mx,
                                 default_val=dflt, step=step,
-                                sci_notation=sci)
+                                sci_notation=sci,
+                                show_radius=radius)
         ctrl.grid(row=i, column=0, sticky="nsew", padx=8, pady=4)
         controls[label] = ctrl
 
@@ -962,20 +1163,73 @@ def build_control_tab(parent):
     right_col.rowconfigure(3, weight=0)   # sensor readouts (fixed height)
 
     # ── Plot 1: Electron Temperature ────────────────────────────────────
-    te_plot = PlotPanel(right_col,
-                        title="Electron Temperature  (Tₑ)",
-                        color="#58a6ff")
+    te_plot = RadialProfilePanel(right_col,
+                                  title="Electron Temperature  (Tₑ)",
+                                  unit="eV",
+                                  color="#58a6ff",
+                                  sci_y=False)
     te_plot.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
 
     # ── Plot 2: Plasma Density ──────────────────────────────────────────
-    ne_plot = PlotPanel(right_col,
-                        title="Plasma Density  (nₑ)",
-                        color="#3fb950")
+    ne_plot = RadialProfilePanel(right_col,
+                                  title="Plasma Density  (nₑ)",
+                                  unit="m⁻³",
+                                  color="#3fb950",
+                                  sci_y=True)
     ne_plot.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
 
     # ── Plot 3: Spectrometer ─────────────────────────────────────────────
     spec_panel = SpectrometerPanel(right_col)
     spec_panel.grid(row=2, column=0, sticky="nsew", pady=(0, 4))
+
+    # ── Neural network model ─────────────────────────────────────────────
+    predictor = PlasmaPredictor("plasma_model_ratonly.pth")
+    model_ok, model_err = predictor.load()
+    if not model_ok:
+        print(f"[PlasmaModel] {model_err}")
+
+    # 20-second aggregation loop: collect spectrum, compute ratios, predict
+    _agg_buffer    = []      # list of intensity arrays gathered this window
+    _AGG_INTERVAL  = 20_000  # ms
+    _AGG_SAMPLES   = 0       # counter
+
+    def _run_prediction():
+        """Called every 20 s. Averages buffered spectra, runs model, updates plots."""
+        nonlocal _agg_buffer
+
+        data = spec_panel.get_latest_data()
+        if data is None or data.get("calibrating"):
+            parent.after(_AGG_INTERVAL, _run_prediction)
+            return
+
+        # Use whatever the latest aggregated spectrum is
+        wl        = data["wavelengths"]
+        intensity = data["intensity"]
+
+        ratios = extract_ratios(wl, intensity)
+        if ratios is None:
+            print("[Prediction] Could not extract peak ratios — peaks out of range")
+            parent.after(_AGG_INTERVAL, _run_prediction)
+            return
+
+        if not model_ok:
+            print("[Prediction] Model not loaded, skipping.")
+            parent.after(_AGG_INTERVAL, _run_prediction)
+            return
+
+        profile = predictor.predict_radial_profile(ratios)
+        if profile is not None:
+            import time as _time
+            ts = _time.strftime("%H:%M:%S")
+            te_plot.update_profile(profile["r"], profile["te"], timestamp=ts)
+            ne_plot.update_profile(profile["r"], profile["ne"], timestamp=ts)
+            print(f"[Prediction] {ts}  "
+                  f"Te_avg={profile['te'].mean():.2f} eV  "
+                  f"ne_avg={profile['ne'].mean():.3e} m⁻³")
+
+        parent.after(_AGG_INTERVAL, _run_prediction)
+
+    parent.after(_AGG_INTERVAL, _run_prediction)
 
     # ── Sensor Readouts: Measured Power | Measured Pressure ─────────────
     readout_frame = tk.Frame(right_col, bg=DARK_BG)
@@ -1050,6 +1304,7 @@ def build_control_tab(parent):
         "te_plot":           te_plot,
         "ne_plot":           ne_plot,
         "spec_panel":        spec_panel,
+        "predictor":         predictor,
         "power_readout":     power_readout,
         "pressure_readout":  pressure_readout,
         "pressure_reader":   pressure_reader,
