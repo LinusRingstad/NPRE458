@@ -1189,6 +1189,7 @@ def build_control_tab(parent):
     print("OK:", model_ok)
     print("ERR:", model_err)
     if not model_ok:
+        raise RuntimeError(f"[PlasmaModel] FAILED TO LOAD:\n{model_err}")
         print(f"[PlasmaModel] {model_err}")
 
     # 20-second aggregation loop: collect spectrum, compute ratios, predict
