@@ -1186,6 +1186,8 @@ def build_control_tab(parent):
     # ── Neural network model ─────────────────────────────────────────────
     predictor = PlasmaPredictor("plasma_model_ratonly.pth")
     model_ok, model_err = predictor.load()
+    print("OK:", model_ok)
+    print("ERR:", model_err)
     if not model_ok:
         print(f"[PlasmaModel] {model_err}")
 
