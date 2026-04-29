@@ -665,11 +665,11 @@ class RadialProfilePanel(tk.Frame):
 
         # X axis labels (cathode / wall)
         self._canvas.create_text(mx, my + ph + 14,
-                                  text=f"wall ({R_WALL*100:.1f} cm)",
+                                  text=f"cathode ({R_CATHODE*100:.1f} cm)",
                                   fill=TEXT_MUTED, font=FONT_SMALL,
                                   anchor="w")
         self._canvas.create_text(mx + pw, my + ph + 14,
-                                  text=f"cathode ({R_CATHODE*100:.1f} cm)",
+                                  text=f"wall ({R_WALL*100:.1f} cm)",
                                   fill=TEXT_MUTED, font=FONT_SMALL,
                                   anchor="e")
 
@@ -1129,7 +1129,7 @@ def build_control_tab(parent):
         ("Pressure",             "Torr",  0.0,   760.0,   0.05,  0.001, False, False),
         ("Power",                "W",     0.0,  2000.0, 25.0, 1.0,   False, False),
         ("Electron Temperature", "eV",    0.0,    50.0,   1.55,  0.05,   False, True),
-        ("Plasma Density",       "m⁻³",   0.0,  1.0e17,  5e10, 1e10,   True,  True),
+        ("Plasma Density",       "m⁻³",   0.0,  1.0e17,  5e16, 1e16,   True,  True),
     ]
 
     controls = {}
@@ -1186,11 +1186,10 @@ def build_control_tab(parent):
     # ── Neural network model ─────────────────────────────────────────────
     predictor = PlasmaPredictor("plasma_model_ratonly.pth")
     model_ok, model_err = predictor.load()
-    print("OK:", model_ok)
-    print("ERR:", model_err)
+  
     if not model_ok:
         raise RuntimeError(f"[PlasmaModel] FAILED TO LOAD:\n{model_err}")
-        print(f"[PlasmaModel] {model_err}")
+
 
     # 20-second aggregation loop: collect spectrum, compute ratios, predict
     _agg_buffer    = []      # list of intensity arrays gathered this window
@@ -1247,6 +1246,8 @@ def build_control_tab(parent):
                                   color=ACCENT)
     power_readout.grid(row=0, column=0, sticky="ew", padx=(0, 4), ipady=4)
 
+    # Tentative for Presentaiton
+    power_readout.update(40)
     # ── Pressure reader ──────────────────────────────────────────────────
     pressure_reader = PressureReader()   # default: /dev/ttyUSB0 @ 115200
     ok, err = pressure_reader.start()
