@@ -304,7 +304,7 @@ for index, row in df.iterrows():
     current = row['Current_A']
     voltage = row['Voltage_kV']
     pressure = row['Pressure_mTorr']
-    ratios = [row[f'rat{i}'] for i in range(1, 7)]
+    ratios = [row[i] for i in ['rat1','rat2','rat4', 'rat5', 'w630', 'w880']]
 
     results = solve_plasma(float(current)*1e-3, float(voltage), float(pressure)*1e-3, verbose=False)
 
