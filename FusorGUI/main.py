@@ -16,7 +16,8 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from camera import PlasmaCamera
-from pressure import PressureReader
+from power_reader import ArduinoReader
+from power_control import PowerController
 from spectrometer import Spectrometer
 from peak_ratios import extract_ratios
 from plasma_model import PlasmaPredictor
@@ -665,11 +666,11 @@ class RadialProfilePanel(tk.Frame):
 
         # X axis labels (cathode / wall)
         self._canvas.create_text(mx, my + ph + 14,
-                                  text=f"cathode ({R_CATHODE*100:.1f} cm)",
+                                  text=f"wall ({R_WALL*100:.1f} cm)",
                                   fill=TEXT_MUTED, font=FONT_SMALL,
                                   anchor="w")
         self._canvas.create_text(mx + pw, my + ph + 14,
-                                  text=f"wall ({R_WALL*100:.1f} cm)",
+                                  text=f"cathode ({R_CATHODE*100:.1f} cm)",
                                   fill=TEXT_MUTED, font=FONT_SMALL,
                                   anchor="e")
 
@@ -1124,12 +1125,13 @@ def build_control_tab(parent):
     ctrl_frame.grid(row=1, column=0, sticky="nsew")
 
     # --- Define controls ---
-    # (label, unit, min, max, default, step)
+    # (label, unit, min, max, default, step, sci_notation, show_radius)
     CONTROL_DEFS = [
-        ("Pressure",             "Torr",  0.0,   760.0,   0.05,  0.001, False, False),
-        ("Power",                "W",     0.0,  2000.0, 25.0, 1.0,   False, False),
-        ("Electron Temperature", "eV",    0.0,    50.0,   1.55,  0.05,   False, True),
-        ("Plasma Density",       "m⁻³",   0.0,  1.0e17,  5e16, 1e16,   True,  True),
+        ("Pressure",             "Torr", 0.0,  760.0,  0.05,  0.001, False, False),
+        ("Voltage",              "kV",   0.0,  1.0,    0.0,   0.01,  False, False),
+        ("Current",              "mA",   0.0,  90.0,   0.0,   1.0,   False, False),
+        ("Electron Temperature", "eV",   0.0,  50.0,   1.55,  0.05,  False, True),
+        ("Plasma Density",       "m⁻³",  0.0,  1.0e17, 5e10,  1e9,   True,  True),
     ]
 
     controls = {}
@@ -1146,11 +1148,44 @@ def build_control_tab(parent):
 
     ctrl_frame.columnconfigure(0, weight=1)
 
-    # TODO: wire controls dict to your hardware/controller module
-    # e.g., from controller import PlasmaController
-    #        pc = PlasmaController()
-    #        for name, widget in controls.items():
-    #            widget.value.trace_add("write", lambda *a, n=name: pc.set(n, controls[n].value.get()))
+    # ── Power controller ─────────────────────────────────────────────────
+    # Wired to Voltage and Current controls; always starts at 0
+    power_ctrl = PowerController()
+
+    def _on_voltage_change(*_):
+        if controls["Voltage"].enabled.get():
+            try:
+                kv = float(controls["Voltage"]._sp_str.get())
+                power_ctrl.set_voltage(kv)
+            except ValueError:
+                pass
+
+    def _on_current_change(*_):
+        if controls["Current"].enabled.get():
+            try:
+                ma = float(controls["Current"]._sp_str.get())
+                power_ctrl.set_current(ma)
+            except ValueError:
+                pass
+
+    controls["Voltage"]._sp_str.trace_add("write", _on_voltage_change)
+    controls["Current"]._sp_str.trace_add("write", _on_current_change)
+
+    # Also zero both when toggled OFF
+    _orig_v_toggle = controls["Voltage"]._on_toggle
+    def _v_toggle_with_zero():
+        _orig_v_toggle()
+        if not controls["Voltage"].enabled.get():
+            power_ctrl.set_voltage(0.0)
+    controls["Voltage"].toggle_btn.config(command=_v_toggle_with_zero)
+
+    _orig_i_toggle = controls["Current"]._on_toggle
+    def _i_toggle_with_zero():
+        _orig_i_toggle()
+        if not controls["Current"].enabled.get():
+            power_ctrl.set_current(0.0)
+    controls["Current"].toggle_btn.config(command=_i_toggle_with_zero)
+
 
     # ════════════════════════════════════════════════════════════════════
     # RIGHT COLUMN
@@ -1186,10 +1221,8 @@ def build_control_tab(parent):
     # ── Neural network model ─────────────────────────────────────────────
     predictor = PlasmaPredictor("plasma_model_ratonly.pth")
     model_ok, model_err = predictor.load()
-  
     if not model_ok:
-        raise RuntimeError(f"[PlasmaModel] FAILED TO LOAD:\n{model_err}")
-
+        print(f"[PlasmaModel] {model_err}")
 
     # 20-second aggregation loop: collect spectrum, compute ratios, predict
     _agg_buffer    = []      # list of intensity arrays gathered this window
@@ -1246,28 +1279,35 @@ def build_control_tab(parent):
                                   color=ACCENT)
     power_readout.grid(row=0, column=0, sticky="ew", padx=(0, 4), ipady=4)
 
-    # Tentative for Presentaiton
-    power_readout.update(40)
-    # ── Pressure reader ──────────────────────────────────────────────────
-    pressure_reader = PressureReader()   # default: /dev/ttyUSB0 @ 115200
-    ok, err = pressure_reader.start()
-
+    # ── Combined Arduino reader (pressure + power on one serial port) ────
+    arduino = ArduinoReader()
+    ok, err = arduino.start()
     if not ok:
-        print(f"[Pressure] Serial error: {err}")
+        print(f"[Arduino] Serial error: {err}")
 
-    def _reconnect_pressure():
-        """Stop the current reader and start a fresh one (called by Refresh button)."""
-        pressure_reader.stop()
+    # Attach power controller to the same serial object (shared port)
+    if ok:
+        power_ctrl.attach_serial(arduino._ser)
+    else:
+        p_ok, p_err = power_ctrl.start()
+        if not p_ok:
+            print(f"[PowerController] {p_err}")
+
+    def _reconnect_arduino():
+        """Reconnect the combined Arduino reader (Refresh button)."""
+        arduino.stop()
         pressure_readout.var.set("---")
         pressure_readout.set_alarm(False)
         pressure_readout._unit_var.set(" Torr")
         pressure_readout.warn_lbl.pack_forget()
         pressure_readout.config(highlightbackground=SUCCESS)
-        ok2, err2 = pressure_reader.start()
-        if not ok2:
+        ok2, err2 = arduino.start()
+        if ok2:
+            power_ctrl.attach_serial(arduino._ser)
+        else:
             pressure_readout.var.set("ERR")
             pressure_readout.set_alarm(True)
-            print(f"[Pressure] Reconnect failed: {err2}")
+            print(f"[Arduino] Reconnect failed: {err2}")
 
     pressure_readout = SensorReadout(
         readout_frame,
@@ -1275,10 +1315,10 @@ def build_control_tab(parent):
         unit="Torr",
         color=SUCCESS,
         warn_above=25,
-        warn_text="⚠ ATMOSPHERE",
+        warn_text="\u26a0 ATMOSPHERE",
         auto_unit={"above": 1.0, "unit_hi": "Torr",
                    "unit_lo": "mTorr", "scale_lo": 1000},
-        on_refresh=_reconnect_pressure,
+        on_refresh=_reconnect_arduino,
     )
     pressure_readout.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=4)
 
@@ -1286,22 +1326,30 @@ def build_control_tab(parent):
         pressure_readout.var.set("ERR")
         pressure_readout.set_alarm(True)
 
-    def _poll_pressure():
-        status, _ = pressure_reader.get_status()
-        val       = pressure_reader.get_pressure()
+    def _poll_arduino():
+        status, _ = arduino.get_status()
 
-        if status == "ok" and val is not None:
-            pressure_readout.update(val)
+        # Pressure
+        pval = arduino.get_pressure()
+        if status == "ok" and pval is not None:
+            pressure_readout.update(pval)
             pressure_readout.set_alarm(False)
-            controls["Pressure"].update_measured_value(val)
+            controls["Pressure"].update_measured_value(pval)
         elif status == "error":
             pressure_readout.var.set("---")
             pressure_readout.set_alarm(True)
-        # "waiting" — leave display as-is until first data arrives
 
-        parent.after(250, _poll_pressure)
+        # Power
+        pdata = arduino.get_power()
+        if pdata is not None:
+            power_readout.update(pdata["power_w"])
+            power_readout.set_alarm(False)
+            controls["Voltage"].update_measured_value(pdata["voltage_kv"])
+            controls["Current"].update_measured_value(pdata["current_ma"])
 
-    parent.after(250, _poll_pressure)
+        parent.after(250, _poll_arduino)
+
+    parent.after(250, _poll_arduino)
 
     return {
         "camera":            camera_panel,
@@ -1312,7 +1360,8 @@ def build_control_tab(parent):
         "predictor":         predictor,
         "power_readout":     power_readout,
         "pressure_readout":  pressure_readout,
-        "pressure_reader":   pressure_reader,
+        "arduino":           arduino,
+        "power_ctrl":        power_ctrl,
     }
 
 
@@ -1418,7 +1467,11 @@ class PlasmaGUI(tk.Tk):
     def _on_close(self):
         """Shut down hardware readers before destroying the window."""
         try:
-            self.widgets["pressure_reader"].stop()
+            self.widgets["power_ctrl"].zero()
+        except Exception:
+            pass
+        try:
+            self.widgets["arduino"].stop()
         except Exception:
             pass
         self.destroy()
