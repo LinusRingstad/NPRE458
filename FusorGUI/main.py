@@ -18,6 +18,7 @@ from PIL import Image, ImageTk
 from camera import PlasmaCamera
 from power_reader import ArduinoReader
 from power_control import PowerController
+from plasma_controller import PlasmaController
 from spectrometer import Spectrometer
 from peak_ratios import extract_ratios
 from plasma_model import PlasmaPredictor
@@ -122,8 +123,11 @@ class ParameterControl(tk.Frame):
         self.setpoint     = tk.DoubleVar(value=default_val)
         self._sp_str      = tk.StringVar(value=self._fmt(default_val))
         self._display_str = tk.StringVar(value=self._fmt(default_val))
-        # Radius input (only used when show_radius=True)
         self.radius_var   = tk.StringVar(value="0.14")
+
+        # Optional callback fired whenever the toggle changes state
+        # Signature: on_toggle_callback(enabled: bool)
+        self.on_toggle_callback = None
 
         self.columnconfigure(1, weight=1)
         self._build()
@@ -262,6 +266,26 @@ class ParameterControl(tk.Frame):
         else:
             self.radius_frame = None
 
+        # ── MSE alarm banner (hidden by default) ─────────────────────────
+        self._mse_banner = tk.Frame(self, bg=DANGER)
+        # NOT gridded — shown only when alarm fires
+        self._mse_lbl = tk.Label(
+            self._mse_banner,
+            text="⚠ CANNOT REACH SETPOINT",
+            bg=DANGER, fg=TEXT_PRIMARY,
+            font=("Courier New", 8, "bold"),
+            padx=6, pady=2,
+        )
+        self._mse_lbl.pack(side="left")
+        self._mse_val = tk.Label(
+            self._mse_banner,
+            text="",
+            bg=DANGER, fg=TEXT_PRIMARY,
+            font=("Courier New", 8),
+            padx=4,
+        )
+        self._mse_val.pack(side="left")
+
     # ------------------------------------------------------------------
     def _on_toggle(self):
         self.enabled.set(not self.enabled.get())
@@ -271,29 +295,45 @@ class ParameterControl(tk.Frame):
             self.toggle_btn.config(text="ON", bg=SUCCESS, fg=DARK_BG,
                                    activebackground=DANGER, activeforeground=TEXT_PRIMARY)
             self.val_display.config(fg=ACCENT)
-            # Reveal arrow and setpoint rows
             self.arrow_frame.grid(row=1, column=1, sticky="w", pady=(0, 4))
             self.sp_frame.grid(row=2, column=1, sticky="w", pady=(0, 4))
             if self.radius_frame is not None:
-                self.radius_frame.grid(row=3, column=1, sticky="w", pady=(0, 10))
-                self.toggle_btn.grid(row=0, column=0, rowspan=4,
+                self.radius_frame.grid(row=3, column=1, sticky="w", pady=(0, 4))
+                self.toggle_btn.grid(row=0, column=0, rowspan=5,
                                      sticky="nsew", padx=(8, 12), pady=8)
             else:
                 self.sp_frame.grid(row=2, column=1, sticky="w", pady=(0, 10))
+                self.toggle_btn.grid(row=0, column=0, rowspan=3,
+                                     sticky="nsew", padx=(8, 12), pady=8)
         else:
             self.toggle_btn.config(text="OFF", bg=DANGER, fg=TEXT_PRIMARY,
                                    activebackground=SUCCESS, activeforeground=DARK_BG)
             self.val_display.config(fg=TEXT_PRIMARY)
-            # Hide arrow, setpoint, and radius rows
             self.arrow_frame.grid_remove()
             self.sp_frame.grid_remove()
             if self.radius_frame is not None:
                 self.radius_frame.grid_remove()
+            self._mse_banner.grid_remove()
             self.toggle_btn.grid(row=0, column=0, rowspan=3,
                                  sticky="nsew", padx=(8, 12), pady=8)
 
-        # TODO: call your hardware enable/disable function here
-        # e.g., hardware.set_control_enabled(self.label, enabled)
+        if self.on_toggle_callback is not None:
+            self.on_toggle_callback(enabled)
+
+    # ------------------------------------------------------------------
+    def set_mse_alarm(self, active: bool, mse: float = None):
+        """
+        Show or hide the MSE alarm banner on this control card.
+        Call from the GUI polling loop.
+        """
+        if active:
+            row = 4 if self.radius_frame is not None else 3
+            self._mse_banner.grid(row=row, column=1,
+                                  sticky="w", pady=(0, 6))
+            if mse is not None:
+                self._mse_val.config(text=f"(err={mse*100:.1f}%)")
+        else:
+            self._mse_banner.grid_remove()
 
     def _increment(self):
         new = min(self.value.get() + self.step, self.max_val)
@@ -1130,8 +1170,8 @@ def build_control_tab(parent):
         ("Pressure",             "Torr", 0.0,  760.0,  0.05,  0.001, False, False),
         ("Voltage",              "kV",   0.0,  1.0,    0.0,   0.01,  False, False),
         ("Current",              "mA",   0.0,  90.0,   0.0,   1.0,   False, False),
-        ("Electron Temperature", "eV",   0.0,  50.0,   1.55,  0.05,  False, True),
-        ("Plasma Density",       "m⁻³",  0.0,  1.0e17, 5e10,  1e9,   True,  True),
+        ("Electron Temperature", "eV",   0.0,  2.0,    1.55,  0.05,  False, True),
+        ("Plasma Density",       "m⁻³",  0.0,  1.0e18, 5e10,  1e9,   True,  True),
     ]
 
     controls = {}
@@ -1148,10 +1188,21 @@ def build_control_tab(parent):
 
     ctrl_frame.columnconfigure(0, weight=1)
 
-    # ── Power controller ─────────────────────────────────────────────────
-    # Wired to Voltage and Current controls; always starts at 0
+    # ── Power controller (shared serial, always starts at 0) ─────────────
     power_ctrl = PowerController()
 
+    # ── Plasma optimizer ─────────────────────────────────────────────────
+    plasma_ctrl = PlasmaController(power_ctrl)
+    plasma_ctrl.start()
+
+    # ── Helper: recompute inhibit state ──────────────────────────────────
+    def _update_inhibit():
+        """Inhibit optimizer whenever manual V or I controls are ON."""
+        manual_on = (controls["Voltage"].enabled.get() or
+                     controls["Current"].enabled.get())
+        plasma_ctrl.inhibit(manual_on)
+
+    # ── Voltage / Current manual control wiring ──────────────────────────
     def _on_voltage_change(*_):
         if controls["Voltage"].enabled.get():
             try:
@@ -1171,21 +1222,68 @@ def build_control_tab(parent):
     controls["Voltage"]._sp_str.trace_add("write", _on_voltage_change)
     controls["Current"]._sp_str.trace_add("write", _on_current_change)
 
-    # Also zero both when toggled OFF
-    _orig_v_toggle = controls["Voltage"]._on_toggle
-    def _v_toggle_with_zero():
-        _orig_v_toggle()
-        if not controls["Voltage"].enabled.get():
+    def _v_toggle(enabled):
+        if not enabled:
             power_ctrl.set_voltage(0.0)
-    controls["Voltage"].toggle_btn.config(command=_v_toggle_with_zero)
+        _update_inhibit()
 
-    _orig_i_toggle = controls["Current"]._on_toggle
-    def _i_toggle_with_zero():
-        _orig_i_toggle()
-        if not controls["Current"].enabled.get():
+    def _i_toggle(enabled):
+        if not enabled:
             power_ctrl.set_current(0.0)
-    controls["Current"].toggle_btn.config(command=_i_toggle_with_zero)
+        _update_inhibit()
 
+    controls["Voltage"].on_toggle_callback = _v_toggle
+    controls["Current"].on_toggle_callback = _i_toggle
+
+    # ── Te / ne control wiring ────────────────────────────────────────────
+    def _te_toggle(enabled):
+        plasma_ctrl.enable_te(enabled)
+        if enabled:
+            try:
+                te_sp = float(controls["Electron Temperature"]._sp_str.get())
+                r     = float(controls["Electron Temperature"].radius_var.get())
+                plasma_ctrl.set_te_target(te_sp, r)
+            except ValueError:
+                pass
+        controls["Electron Temperature"].set_mse_alarm(False)
+
+    def _ne_toggle(enabled):
+        plasma_ctrl.enable_ne(enabled)
+        if enabled:
+            try:
+                ne_sp = float(controls["Plasma Density"]._sp_str.get())
+                r     = float(controls["Plasma Density"].radius_var.get())
+                plasma_ctrl.set_ne_target(ne_sp / 1e6, r)  # m⁻³ → cm⁻³
+            except ValueError:
+                pass
+        controls["Plasma Density"].set_mse_alarm(False)
+
+    controls["Electron Temperature"].on_toggle_callback = _te_toggle
+    controls["Plasma Density"].on_toggle_callback       = _ne_toggle
+
+    # Update Te/ne targets live when setpoint or radius changes
+    def _te_sp_changed(*_):
+        if controls["Electron Temperature"].enabled.get():
+            try:
+                te_sp = float(controls["Electron Temperature"]._sp_str.get())
+                r     = float(controls["Electron Temperature"].radius_var.get())
+                plasma_ctrl.set_te_target(te_sp, r)
+            except ValueError:
+                pass
+
+    def _ne_sp_changed(*_):
+        if controls["Plasma Density"].enabled.get():
+            try:
+                ne_sp = float(controls["Plasma Density"]._sp_str.get())
+                r     = float(controls["Plasma Density"].radius_var.get())
+                plasma_ctrl.set_ne_target(ne_sp / 1e6, r)
+            except ValueError:
+                pass
+
+    controls["Electron Temperature"]._sp_str.trace_add("write", _te_sp_changed)
+    controls["Electron Temperature"].radius_var.trace_add("write", _te_sp_changed)
+    controls["Plasma Density"]._sp_str.trace_add("write", _ne_sp_changed)
+    controls["Plasma Density"].radius_var.trace_add("write", _ne_sp_changed)
 
     # ════════════════════════════════════════════════════════════════════
     # RIGHT COLUMN
@@ -1193,12 +1291,12 @@ def build_control_tab(parent):
     right_col = tk.Frame(parent, bg=DARK_BG)
     right_col.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=8)
     right_col.columnconfigure(0, weight=1)
-    right_col.rowconfigure(0, weight=1)   # Te plot
-    right_col.rowconfigure(1, weight=1)   # ne plot
-    right_col.rowconfigure(2, weight=1)   # EEDF plot
-    right_col.rowconfigure(3, weight=0)   # sensor readouts (fixed height)
+    right_col.rowconfigure(0, weight=1)
+    right_col.rowconfigure(1, weight=1)
+    right_col.rowconfigure(2, weight=1)
+    right_col.rowconfigure(3, weight=0)
 
-    # ── Plot 1: Electron Temperature ────────────────────────────────────
+    # ── Plot 1: Electron Temperature ─────────────────────────────────────
     te_plot = RadialProfilePanel(right_col,
                                   title="Electron Temperature  (Tₑ)",
                                   unit="eV",
@@ -1206,7 +1304,7 @@ def build_control_tab(parent):
                                   sci_y=False)
     te_plot.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
 
-    # ── Plot 2: Plasma Density ──────────────────────────────────────────
+    # ── Plot 2: Plasma Density ────────────────────────────────────────────
     ne_plot = RadialProfilePanel(right_col,
                                   title="Plasma Density  (nₑ)",
                                   unit="m⁻³",
@@ -1224,32 +1322,21 @@ def build_control_tab(parent):
     if not model_ok:
         print(f"[PlasmaModel] {model_err}")
 
-    # 20-second aggregation loop: collect spectrum, compute ratios, predict
-    _agg_buffer    = []      # list of intensity arrays gathered this window
-    _AGG_INTERVAL  = 20_000  # ms
-    _AGG_SAMPLES   = 0       # counter
+    _AGG_INTERVAL = 20_000   # ms
 
     def _run_prediction():
-        """Called every 20 s. Averages buffered spectra, runs model, updates plots."""
-        nonlocal _agg_buffer
-
         data = spec_panel.get_latest_data()
         if data is None or data.get("calibrating"):
             parent.after(_AGG_INTERVAL, _run_prediction)
             return
 
-        # Use whatever the latest aggregated spectrum is
-        wl        = data["wavelengths"]
-        intensity = data["intensity"]
-
-        ratios, reason = extract_ratios(wl, intensity)
+        ratios, reason = extract_ratios(data["wavelengths"], data["intensity"])
         if ratios is None:
             print(f"[Prediction] Skipping: {reason}")
             parent.after(_AGG_INTERVAL, _run_prediction)
             return
 
         if not model_ok:
-            print("[Prediction] Model not loaded, skipping.")
             parent.after(_AGG_INTERVAL, _run_prediction)
             return
 
@@ -1259,6 +1346,19 @@ def build_control_tab(parent):
             ts = _time.strftime("%H:%M:%S")
             te_plot.update_profile(profile["r"], profile["te"], timestamp=ts)
             ne_plot.update_profile(profile["r"], profile["ne"], timestamp=ts)
+
+            # Feed new profile to the plasma controller
+            plasma_ctrl.on_new_profile(profile)
+
+            # Mirror controller's measured values back into the control cards
+            te_meas = plasma_ctrl.get_te_measured()
+            ne_meas = plasma_ctrl.get_ne_measured()
+            if te_meas is not None:
+                controls["Electron Temperature"].update_measured_value(te_meas)
+            if ne_meas is not None:
+                # ne_meas is in cm⁻³; control card uses m⁻³ display
+                controls["Plasma Density"].update_measured_value(ne_meas * 1e6)
+
             print(f"[Prediction] {ts}  "
                   f"Te_avg={profile['te'].mean():.2f} eV  "
                   f"ne_avg={profile['ne'].mean():.3e} m⁻³")
@@ -1267,9 +1367,34 @@ def build_control_tab(parent):
 
     parent.after(_AGG_INTERVAL, _run_prediction)
 
-    # ── Sensor Readouts: Measured Power | Measured Pressure ─────────────
+    # ── Controller status polling (250 ms) ────────────────────────────────
+    def _poll_controller():
+        """Update MSE alarms and controller-driven current display."""
+        te_alarm = plasma_ctrl.get_te_alarm()
+        ne_alarm = plasma_ctrl.get_ne_alarm()
+
+        controls["Electron Temperature"].set_mse_alarm(
+            te_alarm and controls["Electron Temperature"].enabled.get(),
+            mse=plasma_ctrl.get_te_mse()
+        )
+        controls["Plasma Density"].set_mse_alarm(
+            ne_alarm and controls["Plasma Density"].enabled.get(),
+            mse=plasma_ctrl.get_ne_mse()
+        )
+
+        # When the optimizer is running, mirror its current command back
+        # into the Current card display so the operator can see what it set
+        status = plasma_ctrl.get_status()
+        if status in ("controlling_te", "controlling_ne"):
+            controls["Current"].update_measured_value(power_ctrl.current_ma)
+
+        parent.after(250, _poll_controller)
+
+    parent.after(250, _poll_controller)
+
+    # ── Sensor Readouts ───────────────────────────────────────────────────
     readout_frame = tk.Frame(right_col, bg=DARK_BG)
-    readout_frame.grid(row=3, column=0, sticky="ew", pady=(0, 0))
+    readout_frame.grid(row=3, column=0, sticky="ew")
     readout_frame.columnconfigure(0, weight=1)
     readout_frame.columnconfigure(1, weight=1)
 
@@ -1279,13 +1404,12 @@ def build_control_tab(parent):
                                   color=ACCENT)
     power_readout.grid(row=0, column=0, sticky="ew", padx=(0, 4), ipady=4)
 
-    # ── Combined Arduino reader (pressure + power on one serial port) ────
+    # ── Combined Arduino reader ────────────────────────────────────────────
     arduino = ArduinoReader()
     ok, err = arduino.start()
     if not ok:
         print(f"[Arduino] Serial error: {err}")
 
-    # Attach power controller to the same serial object (shared port)
     if ok:
         power_ctrl.attach_serial(arduino._ser)
     else:
@@ -1294,7 +1418,6 @@ def build_control_tab(parent):
             print(f"[PowerController] {p_err}")
 
     def _reconnect_arduino():
-        """Reconnect the combined Arduino reader (Refresh button)."""
         arduino.stop()
         pressure_readout.var.set("---")
         pressure_readout.set_alarm(False)
@@ -1329,7 +1452,6 @@ def build_control_tab(parent):
     def _poll_arduino():
         status, _ = arduino.get_status()
 
-        # Pressure
         pval = arduino.get_pressure()
         if status == "ok" and pval is not None:
             pressure_readout.update(pval)
@@ -1339,7 +1461,6 @@ def build_control_tab(parent):
             pressure_readout.var.set("---")
             pressure_readout.set_alarm(True)
 
-        # Power
         pdata = arduino.get_power()
         if pdata is not None:
             power_readout.update(pdata["power_w"])
@@ -1358,6 +1479,7 @@ def build_control_tab(parent):
         "ne_plot":           ne_plot,
         "spec_panel":        spec_panel,
         "predictor":         predictor,
+        "plasma_ctrl":       plasma_ctrl,
         "power_readout":     power_readout,
         "pressure_readout":  pressure_readout,
         "arduino":           arduino,
@@ -1465,7 +1587,11 @@ class PlasmaGUI(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _on_close(self):
-        """Shut down hardware readers before destroying the window."""
+        """Shut down hardware and controller threads before destroying."""
+        try:
+            self.widgets["plasma_ctrl"].stop()
+        except Exception:
+            pass
         try:
             self.widgets["power_ctrl"].zero()
         except Exception:
