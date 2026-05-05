@@ -51,10 +51,16 @@ MAX_TE_EV      = 2.0
 MAX_NE_CM3     = 1e12          # cm⁻³
 MAX_NE_M3      = MAX_NE_CM3 * 1e6
 
-MAX_CURRENT_MA = 90.0
-MIN_CURRENT_MA = 0.0
+MAX_CURRENT_MA = 40.0   # soft upper limit — stay in known-good regime
+MIN_CURRENT_MA = 10.0   # soft lower limit — below this plasma may extinguish
 MAX_VOLTAGE_KV = 1.0
-MIN_VOLTAGE_KV = 0.0
+MIN_VOLTAGE_KV = 0.5    # keep above 500 V to maintain plasma
+
+# ── Baseline operating point ─────────────────────────────────────────────────
+# Used when handing control back from manual V/I to the optimizer,
+# and as the PI feedforward starting point.
+BASELINE_VOLTAGE_KV = 0.55   # kV  — safe ignition voltage
+BASELINE_CURRENT_MA = 20.0   # mA  — midpoint of operating range
 
 # ── PI tuning ────────────────────────────────────────────────────────────────
 # These are intentionally conservative.  The system has significant latency
@@ -120,6 +126,14 @@ class PlasmaController:
         ctrl.set_ne_target(cm3, radius)
     """
 
+    # Expose regime constants so main.py can read them for handoff logic
+    BASELINE_VOLTAGE_KV = BASELINE_VOLTAGE_KV
+    BASELINE_CURRENT_MA = BASELINE_CURRENT_MA
+    MIN_CURRENT_MA      = MIN_CURRENT_MA
+    MAX_CURRENT_MA      = MAX_CURRENT_MA
+    MIN_VOLTAGE_KV      = MIN_VOLTAGE_KV
+    MAX_VOLTAGE_KV      = MAX_VOLTAGE_KV
+
     def __init__(self, power_ctrl: PowerController):
         self._power  = power_ctrl
         self._lock   = threading.Lock()
@@ -127,7 +141,7 @@ class PlasmaController:
         # Latest profile — written by main.py callback, read by control thread
         self._profile = None
 
-        # PI controllers (one per variable)
+        # PI controllers — bounded to the safe operating regime
         self._te_pi = PIController(TE_KP, TE_KI, CONTROL_INTERVAL_S,
                                    MIN_CURRENT_MA, MAX_CURRENT_MA)
         self._ne_pi = PIController(NE_KP, NE_KI, CONTROL_INTERVAL_S,
@@ -209,28 +223,48 @@ class PlasmaController:
         with self._lock:
             if not on:
                 self._te_pi.reset()
-                self._te_mse   = None
-                self._te_alarm = False
+                self._te_mse         = None
+                self._te_alarm       = False
                 self._te_alarm_count = 0
             self._te_enabled = on
+
+        if on:
+            # Bring power supply to baseline operating regime before
+            # the PI loop starts nudging it
+            self._power.set_voltage(BASELINE_VOLTAGE_KV)
+            self._power.set_current(BASELINE_CURRENT_MA)
 
     def enable_ne(self, on: bool):
         with self._lock:
             if not on:
                 self._ne_pi.reset()
-                self._ne_mse   = None
-                self._ne_alarm = False
+                self._ne_mse         = None
+                self._ne_alarm       = False
                 self._ne_alarm_count = 0
             self._ne_enabled = on
+
+        if on:
+            self._power.set_voltage(BASELINE_VOLTAGE_KV)
+            self._power.set_current(BASELINE_CURRENT_MA)
 
     def inhibit(self, on: bool):
         """Inhibit controller when manual V/I controls are active."""
         with self._lock:
-            if on and not self._inhibited:
+            was_inhibited = self._inhibited
+            if on and not was_inhibited:
                 # Reset PI state so there's no windup when control resumes
                 self._te_pi.reset()
                 self._ne_pi.reset()
             self._inhibited = on
+
+        if not on and was_inhibited:
+            # Released back to optimizer — restore safe baseline
+            with self._lock:
+                te_active = self._te_enabled
+                ne_active = self._ne_enabled
+            if te_active or ne_active:
+                self._power.set_voltage(BASELINE_VOLTAGE_KV)
+                self._power.set_current(BASELINE_CURRENT_MA)
 
     # ── Getters (GUI main thread) ─────────────────────────────────────────────
 

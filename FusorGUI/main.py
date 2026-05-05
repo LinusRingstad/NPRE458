@@ -1224,18 +1224,48 @@ def build_control_tab(parent):
 
     def _v_toggle(enabled):
         if not enabled:
-            power_ctrl.set_voltage(0.0)
+            # Only zero voltage if no optimizer loop is running
+            optimizer_active = (controls["Electron Temperature"].enabled.get() or
+                                controls["Plasma Density"].enabled.get())
+            if not optimizer_active:
+                power_ctrl.set_voltage(0.0)
+            else:
+                # Hand voltage back to optimizer baseline
+                power_ctrl.set_voltage(plasma_ctrl.BASELINE_VOLTAGE_KV)
         _update_inhibit()
 
     def _i_toggle(enabled):
         if not enabled:
-            power_ctrl.set_current(0.0)
+            optimizer_active = (controls["Electron Temperature"].enabled.get() or
+                                controls["Plasma Density"].enabled.get())
+            if not optimizer_active:
+                power_ctrl.set_current(0.0)
+            else:
+                # Hand current back to optimizer baseline
+                power_ctrl.set_current(plasma_ctrl.BASELINE_CURRENT_MA)
         _update_inhibit()
 
     controls["Voltage"].on_toggle_callback = _v_toggle
     controls["Current"].on_toggle_callback = _i_toggle
 
     # ── Te / ne control wiring ────────────────────────────────────────────
+    def _reset_spectrometer_for_control():
+        """
+        Reset the spectrometer's EMA background/stack so the next prediction
+        reflects the current plasma state, not historical accumulated signal.
+        Only acts if the spectrometer is actually running.
+        """
+        spec = spec_panel._spec
+        if spec._running:
+            import threading as _threading
+            def _do_reset():
+                import time as _t
+                _t.sleep(0.1)   # let current frame finish
+                spec._stacked_profile    = None
+                spec._background_profile = None
+                spec._start_time         = _t.time()   # restart calibration window
+            _threading.Thread(target=_do_reset, daemon=True).start()
+
     def _te_toggle(enabled):
         plasma_ctrl.enable_te(enabled)
         if enabled:
@@ -1245,6 +1275,7 @@ def build_control_tab(parent):
                 plasma_ctrl.set_te_target(te_sp, r)
             except ValueError:
                 pass
+            _reset_spectrometer_for_control()
         controls["Electron Temperature"].set_mse_alarm(False)
 
     def _ne_toggle(enabled):
@@ -1256,6 +1287,7 @@ def build_control_tab(parent):
                 plasma_ctrl.set_ne_target(ne_sp / 1e6, r)  # m⁻³ → cm⁻³
             except ValueError:
                 pass
+            _reset_spectrometer_for_control()
         controls["Plasma Density"].set_mse_alarm(False)
 
     controls["Electron Temperature"].on_toggle_callback = _te_toggle
@@ -1284,6 +1316,19 @@ def build_control_tab(parent):
     controls["Electron Temperature"].radius_var.trace_add("write", _te_sp_changed)
     controls["Plasma Density"]._sp_str.trace_add("write", _ne_sp_changed)
     controls["Plasma Density"].radius_var.trace_add("write", _ne_sp_changed)
+
+    # Periodic spectrometer reset while optimizer is active (every 60 s)
+    # This flushes stale EMA so predictions reflect current plasma state
+    _SPEC_RESET_INTERVAL_MS = 60_000
+
+    def _periodic_spec_reset():
+        optimizer_active = (controls["Electron Temperature"].enabled.get() or
+                            controls["Plasma Density"].enabled.get())
+        if optimizer_active:
+            _reset_spectrometer_for_control()
+        parent.after(_SPEC_RESET_INTERVAL_MS, _periodic_spec_reset)
+
+    parent.after(_SPEC_RESET_INTERVAL_MS, _periodic_spec_reset)
 
     # ════════════════════════════════════════════════════════════════════
     # RIGHT COLUMN
